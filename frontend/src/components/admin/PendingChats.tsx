@@ -1,77 +1,98 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Search, Clock, FileText, AlertCircle, CheckCircle } from 'lucide-react';
+import { User as AppUser } from '../../App';
+import { apiCall } from '../../utils/api';
+import { useWebSocket } from '../../hooks/useWebSocket';
 
 interface PendingChat {
   id: string;
-  customerId: string;
-  customerName: string;
+  customer_id: string;
+  customer_name: string;
   category: string;
   issue: string;
-  waitTime: number; // in minutes
+  wait_time: number; // in minutes
   priority: 'high' | 'medium' | 'low';
 }
 
-const mockPendingChats: PendingChat[] = [
-  {
-    id: '1',
-    customerId: 'user4',
-    customerName: 'user4@example.com',
-    category: '환불 요청',
-    issue: '고객이 환불 정책 예외 사항을 요청하고 있습니다',
-    waitTime: 45,
-    priority: 'high',
-  },
-  {
-    id: '2',
-    customerId: 'user5',
-    customerName: 'user5@example.com',
-    category: '주문 문의',
-    issue: '배송지 변경 요청 - 이미 발송된 주문',
-    waitTime: 30,
-    priority: 'medium',
-  },
-  {
-    id: '3',
-    customerId: 'user6',
-    customerName: 'user6@example.com',
-    category: '계정 관리',
-    issue: '계정 복구 요청 - 추가 인증 필요',
-    waitTime: 15,
-    priority: 'low',
-  },
-];
-
-export function PendingChats() {
+export function PendingChats({ user }: { user: AppUser }) {
+  const [chats, setChats] = useState<PendingChat[]>([]);
   const [selectedChat, setSelectedChat] = useState<PendingChat | null>(null);
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [responseText, setResponseText] = useState('');
+  const [loading, setLoading] = useState(false);
 
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
 
-  const filteredChats = mockPendingChats.filter((chat) => {
-    const matchesCategory =
-      filterCategory === 'all' || chat.category === filterCategory;
-    const matchesSearch = chat.customerName
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-    return matchesCategory && matchesSearch;
-  });
+  const fetchPendingChats = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await apiCall<{ chats: PendingChat[] }>(
+        `/api/admin/chats/pending?category=${encodeURIComponent(
+          filterCategory
+        )}&search=${encodeURIComponent(searchQuery)}`
+      );
+      setChats(res.data?.chats || []);
+    } finally {
+      setLoading(false);
+    }
+  }, [filterCategory, searchQuery]);
 
-  const handleProvideInfo = () => {
-    if (!responseText.trim()) return;
+  useEffect(() => {
+    void fetchPendingChats();
+  }, [fetchPendingChats]);
+
+  useWebSocket(
+    (payload: any) => {
+      if (!payload?.type) return;
+      if (payload.type === 'new_chat_session') {
+        void fetchPendingChats();
+      } else if (payload.type === 'session_status_changed') {
+        const status = payload.data?.status;
+        if (status !== 'pending') {
+          void fetchPendingChats();
+        }
+      }
+    },
+    {
+      enabled: true,
+      onOpen: (ws) => {
+        ws.send(JSON.stringify({ type: 'subscribe_chats', data: { chat_type: 'pending' } }));
+      },
+    }
+  );
+
+  const filteredChats = useMemo(() => {
+    return chats;
+  }, [chats]);
+
+  const handleProvideInfo = useCallback(async () => {
+    if (!responseText.trim() || !selectedChat) return;
+    await apiCall(`/api/admin/chats/${encodeURIComponent(selectedChat.id)}/provide-info`, {
+      method: 'POST',
+      body: JSON.stringify({ info: responseText }),
+    });
     alert('AI에게 정보를 전달했습니다. AI가 고객에게 응답합니다.');
     setResponseText('');
-  };
+    setSelectedChat(null);
+    await fetchPendingChats();
+  }, [fetchPendingChats, responseText, selectedChat]);
 
-  const handleDirectResponse = () => {
-    alert('직접 응답 모드로 전환합니다.');
-  };
+  const handleDirectResponse = useCallback(async () => {
+    if (!selectedChat) return;
+    await apiCall(`/api/admin/chats/${encodeURIComponent(selectedChat.id)}/takeover`, {
+      method: 'POST',
+      body: JSON.stringify({ agent_id: user.id }),
+    });
+    alert('상담원 모드로 전환되었습니다. 상담 중인 채팅 탭에서 계속 진행할 수 있습니다.');
+    setSelectedChat(null);
+    await fetchPendingChats();
+  }, [fetchPendingChats, selectedChat, user.id]);
 
   return (
-    <div className="h-full flex">
+    <div className="h-full flex overflow-hidden">
       {/* Pending list */}
-      <div className="w-96 bg-white border-r border-gray-200 flex flex-col">
+      <div className="w-96 bg-white border-r border-gray-200 flex flex-col min-h-0">
         <div className="p-4 border-b border-gray-200">
           <h2 className="text-gray-900 mb-4">처리 대기 중인 채팅</h2>
 
@@ -103,57 +124,67 @@ export function PendingChats() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          {filteredChats.map((chat) => (
-            <button
-              key={chat.id}
-              onClick={() => setSelectedChat(chat)}
-              className={`w-full p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left ${
-                selectedChat?.id === chat.id ? 'bg-orange-50' : ''
-              }`}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <span className="text-gray-900">{chat.customerName}</span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-white ${
-                    chat.priority === 'high'
-                      ? 'bg-red-600'
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {loading ? (
+            <div className="h-full flex items-center justify-center text-gray-500">
+              대기 채팅 목록을 불러오는 중입니다...
+            </div>
+          ) : filteredChats.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-gray-500">
+              처리 대기 중인 채팅이 없습니다.
+            </div>
+          ) : (
+            filteredChats.map((chat) => (
+              <button
+                key={chat.id}
+                onClick={() => setSelectedChat(chat)}
+                className={`w-full p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left ${
+                  selectedChat?.id === chat.id ? 'bg-orange-50' : ''
+                }`}
+              >
+                <div className="flex items-start justify-between mb-2">
+                  <span className="text-gray-900">{chat.customer_name}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-white ${
+                      chat.priority === 'high'
+                        ? 'bg-red-600'
+                        : chat.priority === 'medium'
+                        ? 'bg-orange-600'
+                        : 'bg-yellow-600'
+                    }`}
+                  >
+                    {chat.priority === 'high'
+                      ? '높음'
                       : chat.priority === 'medium'
-                      ? 'bg-orange-600'
-                      : 'bg-yellow-600'
-                  }`}
-                >
-                  {chat.priority === 'high'
-                    ? '높음'
-                    : chat.priority === 'medium'
-                    ? '보통'
-                    : '낮음'}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
-                  {chat.category}
-                </span>
-              </div>
-              <p className="text-gray-600 mb-2 line-clamp-2">{chat.issue}</p>
-              <div className="flex items-center gap-1 text-orange-600">
-                <Clock className="w-4 h-4" />
-                <span>대기 시간: {chat.waitTime}분</span>
-              </div>
-            </button>
-          ))}
+                      ? '보통'
+                      : '낮음'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
+                    {chat.category}
+                  </span>
+                </div>
+                <p className="text-gray-600 mb-2 line-clamp-2">{chat.issue}</p>
+                <div className="flex items-center gap-1 text-orange-600">
+                  <Clock className="w-4 h-4" />
+                  <span>대기 시간: {chat.wait_time}분</span>
+                </div>
+              </button>
+            ))
+          )}
         </div>
       </div>
 
       {/* Detail view */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {selectedChat ? (
           <>
             <div className="bg-white border-b border-gray-200 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-gray-900 mb-1">
-                    {selectedChat.customerName}
+                    {selectedChat.customer_name}
                   </h3>
                   <div className="flex items-center gap-2">
                     <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
@@ -180,7 +211,7 @@ export function PendingChats() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto p-6 min-h-0">
               <div className="max-w-3xl space-y-6">
                 {/* AI Summary */}
                 <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -204,9 +235,9 @@ export function PendingChats() {
                     <div>
                       <h4 className="text-gray-700 mb-2">주문/계정 연관 정보</h4>
                       <div className="bg-gray-50 rounded p-3 text-gray-600">
-                        <p>고객 ID: {selectedChat.customerId}</p>
-                        <p>이메일: {selectedChat.customerName}</p>
-                        <p>대기 시간: {selectedChat.waitTime}분</p>
+                        <p>고객 ID: {selectedChat.customer_id}</p>
+                        <p>이메일: {selectedChat.customer_name}</p>
+                        <p>대기 시간: {selectedChat.wait_time}분</p>
                       </div>
                     </div>
                   </div>

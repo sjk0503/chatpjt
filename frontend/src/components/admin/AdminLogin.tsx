@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { User } from '../../App';
 import { Shield, Monitor } from 'lucide-react';
+import { apiCall } from '../../utils/api';
 
 interface AdminLoginProps {
   onLogin: (user: User) => void;
@@ -10,6 +11,7 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -23,7 +25,7 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -32,13 +34,29 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
       return;
     }
 
-    // Mock admin login
-    onLogin({
-      id: 'admin-1',
-      email: email,
-      role: 'admin',
-      name: '관리자',
-    });
+    try {
+      setLoading(true);
+      const res = await apiCall<{ user: User; token: string }>(
+        '/api/auth/login',
+        {
+          method: 'POST',
+          body: JSON.stringify({ email, password, role: 'admin' }),
+        },
+        { auth: false }
+      );
+
+      if (!res.data) throw new Error('로그인 응답이 올바르지 않습니다.');
+
+      localStorage.setItem('token', res.data.token);
+      onLogin(res.data.user);
+    } catch (e: any) {
+      setError(
+        e?.message ||
+          '로그인에 실패했습니다. 관리자 계정이 없다면 백엔드에서 관리자 계정을 먼저 생성해주세요.'
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (isMobile) {
@@ -113,15 +131,16 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
 
             <button
               type="submit"
+              disabled={loading}
               className="w-full bg-gray-900 text-white py-3 rounded-lg hover:bg-gray-800 transition-colors"
             >
-              관리자 로그인
+              {loading ? '로그인 중...' : '관리자 로그인'}
             </button>
           </form>
         </div>
 
         <div className="mt-6 text-center text-gray-600">
-          <p>데모 계정: 임의의 이메일과 비밀번호를 입력하세요</p>
+          <p>관리자 계정이 없다면 백엔드에서 먼저 생성해주세요.</p>
         </div>
       </div>
     </div>

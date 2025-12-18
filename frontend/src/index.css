@@ -1174,6 +1174,20 @@ html {
   font-size: var(--font-size);
 }
 
+/* -----------------------------------------------------------------------------
+ * Extra utilities
+ * This project ships a pre-built Tailwind stylesheet (not JIT-generated).
+ * Add a minimal set of missing utilities that are used in the UI layout.
+ * -------------------------------------------------------------------------- */
+
+.overflow-hidden {
+  overflow: hidden;
+}
+
+.min-h-0 {
+  min-height: 0;
+}
+
 @property --tw-translate-x {
   syntax: "*";
   inherits: false;

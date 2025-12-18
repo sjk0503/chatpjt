@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CustomerLogin } from './components/customer/CustomerLogin';
 import { CustomerChat } from './components/customer/CustomerChat';
 import { AdminLogin } from './components/admin/AdminLogin';
 import { AdminDashboard } from './components/admin/AdminDashboard';
+import { apiCall } from './utils/api';
 
 export type UserRole = 'customer' | 'admin' | null;
 
@@ -17,16 +18,34 @@ function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAdminMode, setIsAdminMode] = useState(false);
 
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    apiCall<User>('/api/auth/me')
+      .then((res) => {
+        if (!res.data) return;
+        setCurrentUser(res.data);
+        setIsAdminMode(res.data.role === 'admin');
+      })
+      .catch(() => {
+        localStorage.removeItem('token');
+      });
+  }, []);
+
   const handleLogin = (user: User) => {
     setCurrentUser(user);
+    setIsAdminMode(user.role === 'admin');
   };
 
   const handleLogout = () => {
+    localStorage.removeItem('token');
     setCurrentUser(null);
   };
 
   const toggleMode = () => {
     setIsAdminMode(!isAdminMode);
+    localStorage.removeItem('token');
     setCurrentUser(null);
   };
 
@@ -45,7 +64,7 @@ function App() {
 
   // Admin view
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="h-screen overflow-hidden bg-gray-50">
       {!currentUser && (
         <div className="fixed top-4 right-4 z-50">
           <button

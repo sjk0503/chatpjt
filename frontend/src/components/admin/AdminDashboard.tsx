@@ -63,7 +63,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
   }
 
   return (
-    <div className="h-screen flex">
+    <div className="h-screen flex overflow-hidden">
       {/* Sidebar */}
       <div className="w-64 bg-gray-900 text-white flex flex-col">
         <div className="p-6">
@@ -103,11 +103,27 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
       </div>
 
       {/* Main content */}
-      <div className="flex-1 overflow-auto bg-gray-50">
-        {activeTab === 'active' && <ActiveChats />}
-        {activeTab === 'pending' && <PendingChats />}
-        {activeTab === 'completed' && <CompletedChats />}
-        {activeTab === 'settings' && <ChatbotSettings />}
+      <div className="flex-1 h-full overflow-hidden bg-gray-50">
+        {activeTab === 'active' && (
+          <div className="h-full">
+            <ActiveChats user={user} />
+          </div>
+        )}
+        {activeTab === 'pending' && (
+          <div className="h-full">
+            <PendingChats user={user} />
+          </div>
+        )}
+        {activeTab === 'completed' && (
+          <div className="h-full">
+            <CompletedChats />
+          </div>
+        )}
+        {activeTab === 'settings' && (
+          <div className="h-full">
+            <ChatbotSettings />
+          </div>
+        )}
       </div>
     </div>
   );

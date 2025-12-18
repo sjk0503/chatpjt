@@ -1,14 +1,24 @@
-import { useState, useRef, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { User } from '../../App';
 import { Send, Paperclip, Bot, User as UserIcon, LogOut } from 'lucide-react';
+import { apiCall } from '../../utils/api';
+import { useWebSocket } from '../../hooks/useWebSocket';
 
 interface Message {
   id: string;
-  sender: 'user' | 'ai' | 'agent';
+  sender: 'user' | 'ai';
   content: string;
   timestamp: Date;
   attachments?: string[];
 }
+
+type ApiMessage = {
+  id: string;
+  sender_type: 'user' | 'ai' | 'agent';
+  content: string;
+  created_at?: string;
+  attachments?: any[];
+};
 
 interface CustomerChatProps {
   user: User;
@@ -16,18 +26,30 @@ interface CustomerChatProps {
 }
 
 export function CustomerChat({ user, onLogout }: CustomerChatProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: '1',
-      sender: 'ai',
-      content: '안녕하세요! 채팅 상담 서비스입니다. 무엇을 도와드릴까요?',
-      timestamp: new Date(),
-    },
-  ]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [inputText, setInputText] = useState('');
-  const [isAgentMode, setIsAgentMode] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [chatEnded, setChatEnded] = useState(false);
+  const [logoutCountdown, setLogoutCountdown] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const addMessage = useCallback((m: Message) => {
+    setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+  }, []);
+
+  const mapApiMessage = useCallback((m: ApiMessage): Message => {
+    return {
+      id: m.id,
+      // 고객 화면에서는 AI/상담원 여부를 구분하지 않는다.
+      sender: m.sender_type === 'user' ? 'user' : 'ai',
+      content: m.content,
+      timestamp: m.created_at ? new Date(m.created_at) : new Date(),
+      attachments: Array.isArray(m.attachments) ? m.attachments.map(String) : undefined,
+    };
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -37,37 +59,84 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
     scrollToBottom();
   }, [messages]);
 
-  const handleSend = () => {
-    if (!inputText.trim()) return;
-
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      sender: 'user',
-      content: inputText,
-      timestamp: new Date(),
+  useEffect(() => {
+    const init = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await apiCall<{ session: { id: string }; messages: ApiMessage[] }>(
+          '/api/chats/session'
+        );
+        if (!res.data) throw new Error('세션 정보를 불러오지 못했습니다.');
+        setSessionId(res.data.session.id);
+        setMessages(res.data.messages.map(mapApiMessage));
+      } catch (e: any) {
+        setError(e?.message || '세션을 불러오지 못했습니다.');
+      } finally {
+        setLoading(false);
+      }
     };
+    init();
+  }, [mapApiMessage]);
 
-    setMessages([...messages, newMessage]);
-    setInputText('');
-
-    // Simulate AI response
-    setTimeout(() => {
-      const aiResponse: Message = {
-        id: (Date.now() + 1).toString(),
-        sender: isAgentMode ? 'agent' : 'ai',
-        content: isAgentMode
-          ? '상담원이 확인 중입니다. 잠시만 기다려주세요.'
-          : '문의사항을 확인했습니다. 추가로 필요한 정보가 있으신가요?',
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, aiResponse]);
+  useEffect(() => {
+    if (!chatEnded || logoutCountdown == null) return;
+    if (logoutCountdown <= 0) {
+      onLogout();
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setLogoutCountdown((prev) => (prev == null ? null : prev - 1));
     }, 1000);
+    return () => window.clearTimeout(timer);
+  }, [chatEnded, logoutCountdown, onLogout]);
+
+  const onWsMessage = useCallback(
+    (payload: any) => {
+      if (!payload?.type) return;
+
+      if (payload.type === 'new_message' && payload.data?.message) {
+        addMessage(mapApiMessage(payload.data.message as ApiMessage));
+      } else if (payload.type === 'session_completed') {
+        const msg = payload.data?.message || '상담이 완료되었습니다.';
+        setChatEnded(true);
+        setLogoutCountdown(10);
+        addMessage({
+          id: `system-${Date.now()}`,
+          sender: 'ai',
+          content: msg,
+          timestamp: new Date(),
+        });
+      }
+    },
+    [addMessage, mapApiMessage]
+  );
+
+  useWebSocket(onWsMessage, { enabled: true });
+
+  const handleSend = async (content: string, attachments?: string[]) => {
+    if (!sessionId || !content.trim() || chatEnded) return;
+    try {
+      setError(null);
+      const res = await apiCall<{ message: ApiMessage }>('/api/chats/messages', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId, content, attachments }),
+      });
+      if (res.data?.message) {
+        addMessage(mapApiMessage(res.data.message));
+      }
+    } catch (e: any) {
+      setError(e?.message || '메시지 전송에 실패했습니다.');
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (chatEnded) return;
+      const content = inputText;
+      setInputText('');
+      void handleSend(content);
     }
   };
 
@@ -78,29 +147,10 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
+      if (chatEnded) return;
       const fileName = files[0].name;
-      const fileMessage: Message = {
-        id: Date.now().toString(),
-        sender: 'user',
-        content: `파일 첨부: ${fileName}`,
-        timestamp: new Date(),
-        attachments: [fileName],
-      };
-      setMessages([...messages, fileMessage]);
+      void handleSend(`파일 첨부: ${fileName}`, [fileName]);
     }
-  };
-
-  const toggleAgentMode = () => {
-    setIsAgentMode(!isAgentMode);
-    const statusMessage: Message = {
-      id: Date.now().toString(),
-      sender: 'ai',
-      content: !isAgentMode
-        ? '상담원이 연결되었습니다.'
-        : 'AI 상담으로 전환되었습니다.',
-      timestamp: new Date(),
-    };
-    setMessages((prev) => [...prev, statusMessage]);
   };
 
   return (
@@ -134,6 +184,14 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
       {/* Messages */}
       <div className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-4xl mx-auto px-6 py-6 space-y-4">
+          {loading && (
+            <div className="text-gray-500">상담 세션을 불러오는 중입니다...</div>
+          )}
+          {error && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+              {error}
+            </div>
+          )}
           {messages.map((message) => (
             <div
               key={message.id}
@@ -146,8 +204,6 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
                 className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                   message.sender === 'user'
                     ? 'bg-blue-600'
-                    : message.sender === 'agent'
-                    ? 'bg-green-600'
                     : 'bg-gray-600'
                 }`}
               >
@@ -199,9 +255,9 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
       {/* Input */}
       <div className="bg-white border-t border-gray-200 px-6 py-4">
         <div className="max-w-4xl mx-auto">
-          {isAgentMode && (
-            <div className="mb-3 px-4 py-2 bg-green-50 border border-green-200 text-green-800 rounded-lg">
-              상담원이 응대 중입니다
+          {chatEnded && logoutCountdown != null && (
+            <div className="mb-3 px-4 py-2 bg-gray-50 border border-gray-200 text-gray-700 rounded-lg">
+              상담이 종료되었습니다. {logoutCountdown}초 뒤에 로그아웃됩니다.
             </div>
           )}
           <div className="flex gap-2">
@@ -209,6 +265,7 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
               onClick={handleFileClick}
               className="p-3 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors flex-shrink-0"
               title="파일 첨부"
+              disabled={loading || chatEnded}
             >
               <Paperclip className="w-5 h-5" />
             </button>
@@ -226,10 +283,16 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
               onKeyPress={handleKeyPress}
               placeholder="메시지를 입력하세요..."
               className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={loading || !sessionId || chatEnded}
             />
             <button
-              onClick={handleSend}
-              disabled={!inputText.trim()}
+              onClick={() => {
+                if (chatEnded) return;
+                const content = inputText;
+                setInputText('');
+                void handleSend(content);
+              }}
+              disabled={loading || !sessionId || chatEnded || !inputText.trim()}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed flex-shrink-0"
             >
               <Send className="w-5 h-5" />

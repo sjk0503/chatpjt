@@ -1,49 +1,26 @@
-import { useState } from 'react';
-import { Search, Filter, FileText, User, Bot, Send } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Search, FileText, User, Bot, Send } from 'lucide-react';
+import { User as AppUser } from '../../App';
+import { apiCall } from '../../utils/api';
+import { useWebSocket } from '../../hooks/useWebSocket';
 
 interface ChatSession {
   id: string;
-  customerId: string;
-  customerName: string;
+  customer_id: string;
+  customer_name: string;
   category: string;
-  lastMessage: string;
-  timestamp: Date;
+  last_message: string;
+  timestamp: string | null;
   status: 'ai' | 'agent';
   unread: number;
 }
 
-const mockChats: ChatSession[] = [
-  {
-    id: '1',
-    customerId: 'user1',
-    customerName: 'user1@example.com',
-    category: '주문 문의',
-    lastMessage: '주문한 상품이 언제 도착하나요?',
-    timestamp: new Date(Date.now() - 5 * 60000),
-    status: 'ai',
-    unread: 2,
-  },
-  {
-    id: '2',
-    customerId: 'user2',
-    customerName: 'user2@example.com',
-    category: '환불 요청',
-    lastMessage: '환불 처리가 가능한가요?',
-    timestamp: new Date(Date.now() - 15 * 60000),
-    status: 'agent',
-    unread: 0,
-  },
-  {
-    id: '3',
-    customerId: 'user3',
-    customerName: 'user3@example.com',
-    category: '기술 지원',
-    lastMessage: '로그인이 안 됩니다',
-    timestamp: new Date(Date.now() - 30 * 60000),
-    status: 'ai',
-    unread: 1,
-  },
-];
+type ApiMessage = {
+  id: string;
+  sender_type: 'user' | 'ai' | 'agent';
+  content: string;
+  created_at?: string;
+};
 
 interface ChatMessage {
   id: string;
@@ -52,60 +29,249 @@ interface ChatMessage {
   timestamp: Date;
 }
 
-const mockMessages: ChatMessage[] = [
-  {
-    id: '1',
-    sender: 'ai',
-    content: '안녕하세요! 무엇을 도와드릴까요?',
-    timestamp: new Date(Date.now() - 35 * 60000),
-  },
-  {
-    id: '2',
-    sender: 'user',
-    content: '주문한 상품이 언제 도착하나요?',
-    timestamp: new Date(Date.now() - 30 * 60000),
-  },
-  {
-    id: '3',
-    sender: 'ai',
-    content: '주문번호를 알려주시면 배송 상태를 확인해드리겠습니다.',
-    timestamp: new Date(Date.now() - 25 * 60000),
-  },
-];
+type SummaryData = {
+  summary: {
+    core_summary: string;
+    current_issues: string[];
+    customer_info: { email: string; started_at: string };
+  };
+};
 
-export function ActiveChats() {
+export function ActiveChats({ user }: { user: AppUser }) {
+  const [chats, setChats] = useState<ChatSession[]>([]);
   const [selectedChat, setSelectedChat] = useState<ChatSession | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSummary, setShowSummary] = useState(false);
   const [agentMode, setAgentMode] = useState(false);
   const [agentMessage, setAgentMessage] = useState('');
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [summary, setSummary] = useState<SummaryData['summary'] | null>(null);
+  const [closingChat, setClosingChat] = useState(false);
+
+  const chatsRef = useRef<ChatSession[]>([]);
+  const loadingChatsRef = useRef(false);
+  const lastChatsRefreshRef = useRef(0);
 
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
 
-  const filteredChats = mockChats.filter((chat) => {
-    const matchesCategory =
-      filterCategory === 'all' || chat.category === filterCategory;
-    const matchesSearch = chat.customerName
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-    return matchesCategory && matchesSearch;
+  const filteredChats = useMemo(() => {
+    return chats.filter((chat) => {
+      const matchesCategory =
+        filterCategory === 'all' || chat.category === filterCategory;
+      const matchesSearch = (chat.customer_name || '')
+        .toLowerCase()
+        .includes(searchQuery.toLowerCase());
+      return matchesCategory && matchesSearch;
+    });
+  }, [chats, filterCategory, searchQuery]);
+
+  const fetchChats = useCallback(async () => {
+    try {
+      setLoadingChats(true);
+      const res = await apiCall<{ chats: ChatSession[] }>(
+        `/api/admin/chats/active?category=${encodeURIComponent(
+          filterCategory
+        )}&search=${encodeURIComponent(searchQuery)}`
+      );
+      setChats(res.data?.chats || []);
+    } finally {
+      setLoadingChats(false);
+    }
+  }, [filterCategory, searchQuery]);
+
+  useEffect(() => {
+    chatsRef.current = chats;
+  }, [chats]);
+
+  useEffect(() => {
+    loadingChatsRef.current = loadingChats;
+  }, [loadingChats]);
+
+  useEffect(() => {
+    void fetchChats();
+  }, [fetchChats]);
+
+  const ensureChatVisible = useCallback(
+    (sessionId: string | null | undefined) => {
+      if (!sessionId) return;
+      if (loadingChatsRef.current) return;
+      if (chatsRef.current.some((c) => c.id === sessionId)) return;
+      const now = Date.now();
+      if (now - lastChatsRefreshRef.current < 500) return;
+      lastChatsRefreshRef.current = now;
+      void fetchChats();
+    },
+    [fetchChats]
+  );
+
+  const mapApiMessage = useCallback((m: ApiMessage): ChatMessage => {
+    return {
+      id: m.id,
+      sender: m.sender_type,
+      content: m.content,
+      timestamp: m.created_at ? new Date(m.created_at) : new Date(),
+    };
+  }, []);
+
+  const fetchMessages = useCallback(
+    async (sessionId: string) => {
+      try {
+        setLoadingMessages(true);
+        const res = await apiCall<{ messages: ApiMessage[] }>(
+          `/api/chats/messages/${encodeURIComponent(sessionId)}`
+        );
+        setMessages((res.data?.messages || []).map(mapApiMessage));
+      } finally {
+        setLoadingMessages(false);
+      }
+    },
+    [mapApiMessage]
+  );
+
+  const fetchSummary = useCallback(async (sessionId: string) => {
+    const res = await apiCall<SummaryData>(
+      `/api/admin/chats/${encodeURIComponent(sessionId)}/summary`
+    );
+    setSummary(res.data?.summary || null);
+  }, []);
+
+  const handleTakeOver = useCallback(async () => {
+    if (!selectedChat) return;
+    const res = await apiCall(
+      `/api/admin/chats/${encodeURIComponent(selectedChat.id)}/takeover`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: user.id }),
+      }
+    );
+    if (res.success) {
+      setAgentMode(true);
+      setChats((prev) =>
+        prev.map((c) => (c.id === selectedChat.id ? { ...c, status: 'agent' } : c))
+      );
+      setSelectedChat((prev) => (prev ? { ...prev, status: 'agent' } : prev));
+    }
+  }, [selectedChat, user.id]);
+
+  const handleSendMessage = useCallback(async () => {
+    if (!agentMessage.trim() || !selectedChat) return;
+    const content = agentMessage;
+    setAgentMessage('');
+    const res = await apiCall<{ message: ApiMessage }>('/api/chats/messages', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: selectedChat.id, content }),
+    });
+    if (res.data?.message) {
+      setMessages((prev) => {
+        const mapped = mapApiMessage(res.data!.message);
+        return prev.some((x) => x.id === mapped.id) ? prev : [...prev, mapped];
+      });
+    }
+  }, [agentMessage, mapApiMessage, selectedChat]);
+
+  const handleCompleteChat = useCallback(async () => {
+    if (!selectedChat || closingChat) return;
+    if (!window.confirm('이 채팅을 종료(완료 처리)하시겠습니까?')) return;
+
+    try {
+      setClosingChat(true);
+      const summaryText =
+        summary?.core_summary || '상담이 상담원에 의해 종료되었습니다.';
+      await apiCall(
+        `/api/admin/chats/${encodeURIComponent(selectedChat.id)}/complete`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ summary: summaryText }),
+        }
+      );
+
+      // WS 이벤트(session_status_changed)로도 정리되지만, UI 반응을 위해 즉시 정리
+      setChats((prev) => prev.filter((c) => c.id !== selectedChat.id));
+      setSelectedChat(null);
+      setMessages([]);
+      setShowSummary(false);
+      setSummary(null);
+      setAgentMode(false);
+      setAgentMessage('');
+    } catch (e: any) {
+      alert(e?.message || '채팅 종료에 실패했습니다.');
+    } finally {
+      setClosingChat(false);
+    }
+  }, [closingChat, selectedChat, summary]);
+
+  const onWsMessage = useCallback((payload: any) => {
+    if (!payload?.type) return;
+
+    if (payload.type === 'new_message' && payload.data?.message) {
+      const sessionId = payload.data.session_id || payload.data.message.session_id;
+      const msg = payload.data.message as ApiMessage;
+      ensureChatVisible(sessionId);
+
+      setChats((prev) =>
+        prev.map((c) =>
+          c.id === sessionId
+            ? {
+                ...c,
+                last_message: msg.content,
+                timestamp: msg.created_at || c.timestamp,
+              }
+            : c
+        )
+      );
+
+      if (selectedChat?.id === sessionId) {
+        setMessages((prev) => {
+          const mapped = mapApiMessage(msg);
+          return prev.some((x) => x.id === mapped.id) ? prev : [...prev, mapped];
+        });
+      }
+    } else if (payload.type === 'unread_count_updated') {
+      const sessionId = payload.data?.session_id;
+      const unread = payload.data?.unread_count;
+      if (!sessionId) return;
+      ensureChatVisible(sessionId);
+      setChats((prev) =>
+        prev.map((c) => (c.id === sessionId ? { ...c, unread: unread ?? c.unread } : c))
+      );
+    } else if (payload.type === 'session_status_changed') {
+      const sessionId = payload.data?.session_id;
+      const status = payload.data?.status;
+      const handlerType = payload.data?.handler_type;
+      if (!sessionId) return;
+      if (status !== 'active') {
+        setChats((prev) => prev.filter((c) => c.id !== sessionId));
+        if (selectedChat?.id === sessionId) {
+          setSelectedChat(null);
+          setMessages([]);
+          setShowSummary(false);
+        }
+      } else {
+        ensureChatVisible(sessionId);
+        if (!handlerType) return;
+        setChats((prev) =>
+          prev.map((c) =>
+            c.id === sessionId ? { ...c, status: handlerType === 'agent' ? 'agent' : 'ai' } : c
+          )
+        );
+      }
+    }
+  }, [ensureChatVisible, mapApiMessage, selectedChat]);
+
+  useWebSocket(onWsMessage, {
+    enabled: true,
+    onOpen: (ws) => {
+      ws.send(JSON.stringify({ type: 'subscribe_chats', data: { chat_type: 'active' } }));
+    },
   });
 
-  const handleTakeOver = () => {
-    setAgentMode(true);
-  };
-
-  const handleSendMessage = () => {
-    if (!agentMessage.trim()) return;
-    // In a real app, send message to customer
-    setAgentMessage('');
-  };
-
   return (
-    <div className="h-full flex">
+    <div className="h-full flex overflow-hidden">
       {/* Chat list */}
-      <div className="w-96 bg-white border-r border-gray-200 flex flex-col">
+      <div className="w-96 bg-white border-r border-gray-200 flex flex-col min-h-0">
         <div className="p-4 border-b border-gray-200">
           <h2 className="text-gray-900 mb-4">상담 중인 채팅</h2>
 
@@ -137,18 +303,28 @@ export function ActiveChats() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {loadingChats && (
+            <div className="p-4 text-gray-500">채팅 목록을 불러오는 중입니다...</div>
+          )}
           {filteredChats.map((chat) => (
             <button
               key={chat.id}
-              onClick={() => setSelectedChat(chat)}
+              onClick={() => {
+                setChats((prev) => prev.map((c) => (c.id === chat.id ? { ...c, unread: 0 } : c)));
+                setSelectedChat({ ...chat, unread: 0 });
+                setAgentMode(chat.status === 'agent');
+                setShowSummary(false);
+                setSummary(null);
+                void fetchMessages(chat.id);
+              }}
               className={`w-full p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left ${
                 selectedChat?.id === chat.id ? 'bg-blue-50' : ''
               }`}
             >
               <div className="flex items-start justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-gray-900">{chat.customerName}</span>
+                  <span className="text-gray-900">{chat.customer_name}</span>
                   {chat.unread > 0 && (
                     <span className="px-2 py-0.5 bg-red-600 text-white rounded-full">
                       {chat.unread}
@@ -168,12 +344,14 @@ export function ActiveChats() {
                   {chat.category}
                 </span>
               </div>
-              <p className="text-gray-600 truncate mb-1">{chat.lastMessage}</p>
+              <p className="text-gray-600 truncate mb-1">{chat.last_message}</p>
               <span className="text-gray-500">
-                {chat.timestamp.toLocaleTimeString('ko-KR', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
+                {chat.timestamp
+                  ? new Date(chat.timestamp).toLocaleTimeString('ko-KR', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : ''}
               </span>
             </button>
           ))}
@@ -181,14 +359,14 @@ export function ActiveChats() {
       </div>
 
       {/* Chat detail */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {selectedChat ? (
           <>
             <div className="bg-white border-b border-gray-200 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-gray-900 mb-1">
-                    {selectedChat.customerName}
+                    {selectedChat.customer_name}
                   </h3>
                   <div className="flex items-center gap-2">
                     <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
@@ -207,12 +385,25 @@ export function ActiveChats() {
                 </div>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => setShowSummary(!showSummary)}
+                    onClick={() => {
+                      const next = !showSummary;
+                      setShowSummary(next);
+                      if (next) void fetchSummary(selectedChat.id);
+                    }}
                     className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
                   >
                     <FileText className="w-4 h-4" />
                     AI 요약
                   </button>
+                  {agentMode && (
+                    <button
+                      onClick={handleCompleteChat}
+                      disabled={closingChat}
+                      className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                    >
+                      채팅 종료
+                    </button>
+                  )}
                   {!agentMode && (
                     <button
                       onClick={handleTakeOver}
@@ -225,22 +416,25 @@ export function ActiveChats() {
               </div>
             </div>
 
-            <div className="flex-1 flex">
-              <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                {mockMessages.map((message) => (
+            <div className="flex-1 flex overflow-hidden min-h-0">
+              <div className="flex-1 overflow-y-auto p-6 space-y-4 min-h-0">
+                {loadingMessages && (
+                  <div className="text-gray-500">메시지를 불러오는 중입니다...</div>
+                )}
+                {messages.map((message) => (
                   <div
                     key={message.id}
                     className={`flex gap-3 ${
-                      message.sender === 'user' ? 'flex-row-reverse' : 'flex-row'
+                      message.sender === 'user' ? 'flex-row' : 'flex-row-reverse'
                     }`}
                   >
                     <div
                       className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
                         message.sender === 'user'
-                          ? 'bg-blue-600'
+                          ? 'bg-gray-600'
                           : message.sender === 'agent'
                           ? 'bg-green-600'
-                          : 'bg-gray-600'
+                          : 'bg-blue-600'
                       }`}
                     >
                       {message.sender === 'user' ? (
@@ -251,14 +445,14 @@ export function ActiveChats() {
                     </div>
                     <div
                       className={`max-w-lg ${
-                        message.sender === 'user' ? 'items-end' : 'items-start'
+                        message.sender === 'user' ? 'items-start' : 'items-end'
                       } flex flex-col gap-1`}
                     >
                       <div
                         className={`px-4 py-3 rounded-2xl ${
                           message.sender === 'user'
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-white border border-gray-200 text-gray-900'
+                            ? 'bg-white border border-gray-200 text-gray-900'
+                            : 'bg-blue-600 text-white'
                         }`}
                       >
                         <p>{message.content}</p>
@@ -275,29 +469,34 @@ export function ActiveChats() {
               </div>
 
               {showSummary && (
-                <div className="w-80 bg-white border-l border-gray-200 p-4">
+                <div className="w-80 bg-white border-l border-gray-200 p-4 overflow-y-auto min-h-0">
                   <h3 className="text-gray-900 mb-4">AI 요약</h3>
                   <div className="space-y-4">
                     <div>
                       <h4 className="text-gray-700 mb-2">상담 핵심 요약</h4>
                       <p className="text-gray-600">
-                        고객이 주문한 상품의 배송 상태를 문의하고 있습니다.
-                        주문번호 확인이 필요합니다.
+                        {summary?.core_summary || '요약을 불러오는 중입니다...'}
                       </p>
                     </div>
                     <div>
                       <h4 className="text-gray-700 mb-2">현재 이슈</h4>
                       <ul className="space-y-1 text-gray-600">
-                        <li>• 주문번호 미확인</li>
-                        <li>• 배송 조회 대기</li>
+                        {(summary?.current_issues || []).length > 0 ? (
+                          summary!.current_issues.map((issue) => <li key={issue}>• {issue}</li>)
+                        ) : (
+                          <li>• 없음</li>
+                        )}
                       </ul>
                     </div>
                     <div>
                       <h4 className="text-gray-700 mb-2">고객 정보</h4>
                       <p className="text-gray-600">
-                        이메일: {selectedChat.customerName}
+                        이메일: {selectedChat.customer_name}
                         <br />
-                        상담 시작: {selectedChat.timestamp.toLocaleString('ko-KR')}
+                        상담 시작:{' '}
+                        {summary?.customer_info?.started_at
+                          ? new Date(summary.customer_info.started_at).toLocaleString('ko-KR')
+                          : ''}
                       </p>
                     </div>
                   </div>

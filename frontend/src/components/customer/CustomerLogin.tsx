@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { User } from '../../App';
 import { MessageSquare } from 'lucide-react';
+import { apiCall } from '../../utils/api';
 
 interface CustomerLoginProps {
   onLogin: (user: User) => void;
@@ -11,9 +12,10 @@ export function CustomerLogin({ onLogin, onSwitchToAdmin }: CustomerLoginProps) 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [clickCount, setClickCount] = useState(0);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -22,13 +24,26 @@ export function CustomerLogin({ onLogin, onSwitchToAdmin }: CustomerLoginProps) 
       return;
     }
 
-    // Mock login
-    onLogin({
-      id: '1',
-      email: email,
-      role: 'customer',
-      name: email.split('@')[0],
-    });
+    try {
+      setLoading(true);
+      const res = await apiCall<{ user: User; token: string }>(
+        '/api/auth/login',
+        {
+          method: 'POST',
+          body: JSON.stringify({ email, password, role: 'customer' }),
+        },
+        { auth: false }
+      );
+
+      if (!res.data) throw new Error('로그인 응답이 올바르지 않습니다.');
+
+      localStorage.setItem('token', res.data.token);
+      onLogin(res.data.user);
+    } catch (e: any) {
+      setError(e?.message || '로그인에 실패했습니다.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLogoClick = () => {
@@ -103,9 +118,10 @@ export function CustomerLogin({ onLogin, onSwitchToAdmin }: CustomerLoginProps) 
 
             <button
               type="submit"
+              disabled={loading}
               className="w-full bg-blue-600 text-white py-3 rounded-lg hover:bg-blue-700 transition-colors"
             >
-              로그인
+              {loading ? '로그인 중...' : '로그인'}
             </button>
 
             {/* Removed password recovery button */}

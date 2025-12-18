@@ -1,24 +1,53 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Save, Plus, X, Info } from 'lucide-react';
+import { apiCall } from '../../utils/api';
 
 export function ChatbotSettings() {
-  const [greeting, setGreeting] = useState('안녕하세요! 채팅 상담 서비스입니다. 무엇을 도와드릴까요?');
-  const [farewell, setFarewell] = useState('상담이 완료되었습니다. 좋은 하루 되세요!');
-  const [companyPolicy, setCompanyPolicy] = useState(
-    '환불은 구매 후 7일 이내에 가능합니다.\n배송비는 고객 부담입니다.\n제품 하자의 경우 무료 교환이 가능합니다.'
-  );
-  const [categories, setCategories] = useState([
-    '주문 문의',
-    '환불 요청',
-    '기술 지원',
-    '계정 관리',
-  ]);
+  const [greeting, setGreeting] = useState('');
+  const [farewell, setFarewell] = useState('');
+  const [companyPolicy, setCompanyPolicy] = useState('');
+  const [categories, setCategories] = useState<string[]>([]);
   const [newCategory, setNewCategory] = useState('');
-  const [humanInterventionRules, setHumanInterventionRules] = useState(
-    '고객이 환불을 요청하는 경우\n기술적 문제 해결이 어려운 경우\n고객이 불만을 표현하는 경우'
-  );
+  const [humanInterventionRules, setHumanInterventionRules] = useState('');
   const [responseWaitTime, setResponseWaitTime] = useState('5');
   const [autoClose, setAutoClose] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const res = await apiCall<{
+          greeting: string;
+          farewell: string;
+          company_policy: string;
+          categories: string[];
+          human_intervention_rules: string;
+          response_wait_time: number;
+          auto_close: boolean;
+        }>('/api/admin/chatbot/settings');
+
+        if (!res.data) throw new Error('설정 정보를 불러오지 못했습니다.');
+
+        setGreeting(res.data.greeting);
+        setFarewell(res.data.farewell);
+        setCompanyPolicy(res.data.company_policy);
+        setCategories(res.data.categories || []);
+        setHumanInterventionRules(res.data.human_intervention_rules);
+        setResponseWaitTime(String(res.data.response_wait_time ?? 5));
+        setAutoClose(Boolean(res.data.auto_close));
+      } catch (e: any) {
+        setError(e?.message || '설정 정보를 불러오지 못했습니다.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    void fetchSettings();
+  }, []);
 
   const handleAddCategory = () => {
     if (newCategory.trim() && !categories.includes(newCategory.trim())) {
@@ -31,12 +60,36 @@ export function ChatbotSettings() {
     setCategories(categories.filter((c) => c !== category));
   };
 
-  const handleSaveSettings = () => {
-    alert('설정이 저장되었습니다.');
+  const handleSaveSettings = async () => {
+    try {
+      setSaving(true);
+      setError(null);
+      await apiCall(
+        '/api/admin/chatbot/settings',
+        {
+          method: 'PUT',
+          body: JSON.stringify({
+            greeting,
+            farewell,
+            company_policy: companyPolicy,
+            categories,
+            human_intervention_rules: humanInterventionRules,
+            response_wait_time: parseInt(responseWaitTime || '5', 10),
+            auto_close: autoClose,
+          }),
+        },
+        { auth: true }
+      );
+      alert('설정이 저장되었습니다.');
+    } catch (e: any) {
+      setError(e?.message || '설정 저장에 실패했습니다.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-y-auto min-h-0">
       <div className="max-w-4xl mx-auto p-6 space-y-8">
         <div>
           <h2 className="text-gray-900 mb-2">챗봇 설정</h2>
@@ -44,6 +97,11 @@ export function ChatbotSettings() {
             AI 상담 챗봇의 동작 방식과 정책을 설정합니다
           </p>
         </div>
+        {error && (
+          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+            {error}
+          </div>
+        )}
 
         {/* Greeting settings */}
         <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -57,6 +115,7 @@ export function ChatbotSettings() {
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                 rows={2}
                 placeholder="고객이 상담을 시작할 때 표시될 메시지"
+                disabled={loading}
               />
             </div>
             <div>
@@ -67,6 +126,7 @@ export function ChatbotSettings() {
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                 rows={2}
                 placeholder="상담 종료 시 표시될 메시지"
+                disabled={loading}
               />
             </div>
           </div>
@@ -87,6 +147,7 @@ export function ChatbotSettings() {
             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
             rows={6}
             placeholder="회사 정책, 규정, FAQ 등을 입력하세요"
+            disabled={loading}
           />
         </div>
 
@@ -131,10 +192,12 @@ export function ChatbotSettings() {
                 }}
                 placeholder="새 카테고리 입력"
                 className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={loading}
               />
               <button
                 onClick={handleAddCategory}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                disabled={loading}
               >
                 <Plus className="w-4 h-4" />
                 추가
@@ -158,6 +221,7 @@ export function ChatbotSettings() {
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                 rows={4}
                 placeholder="AI가 사람에게 상담을 넘겨야 하는 기준을 입력하세요"
+                disabled={loading}
               />
             </div>
 
@@ -172,6 +236,7 @@ export function ChatbotSettings() {
                 min="1"
                 max="60"
                 className="w-32 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={loading}
               />
               <p className="mt-2 text-gray-600">
                 AI가 처리할 수 없는 경우, "말씀해주신 내용 관련해서 추가적으로 확인 후 {responseWaitTime}분 이내에 답변드리도록 하겠습니다."라고 안내합니다
@@ -188,6 +253,7 @@ export function ChatbotSettings() {
                     checked={autoClose}
                     onChange={() => setAutoClose(true)}
                     className="w-4 h-4 text-blue-600"
+                    disabled={loading}
                   />
                   <span className="text-gray-700">AI가 자동으로 종료</span>
                 </label>
@@ -198,6 +264,7 @@ export function ChatbotSettings() {
                     checked={!autoClose}
                     onChange={() => setAutoClose(false)}
                     className="w-4 h-4 text-blue-600"
+                    disabled={loading}
                   />
                   <span className="text-gray-700">사용자 요청 시에만 종료</span>
                 </label>
@@ -210,10 +277,11 @@ export function ChatbotSettings() {
         <div className="flex justify-end">
           <button
             onClick={handleSaveSettings}
+            disabled={loading || saving}
             className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
             <Save className="w-5 h-5" />
-            설정 저장
+            {saving ? '저장 중...' : '설정 저장'}
           </button>
         </div>
       </div>

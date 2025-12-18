@@ -1,76 +1,42 @@
-import { useState } from 'react';
-import { Search, Calendar, Download, Eye } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Search, Calendar, Download } from 'lucide-react';
+import { apiCall } from '../../utils/api';
 
 interface CompletedChat {
   id: string;
-  customerId: string;
-  customerName: string;
+  customer_id: string;
+  customer_name: string;
   category: string;
-  handledBy: 'AI' | 'Agent';
+  handled_by: 'AI' | '상담원';
   duration: number; // in minutes
-  completedAt: Date;
+  completed_at: string | null;
   summary: string;
 }
 
-const mockCompletedChats: CompletedChat[] = [
-  {
-    id: '1',
-    customerId: 'user7',
-    customerName: 'user7@example.com',
-    category: '주문 문의',
-    handledBy: 'AI',
-    duration: 8,
-    completedAt: new Date(Date.now() - 2 * 60 * 60000),
-    summary: '배송 조회 문의 - 정상 처리 완료',
-  },
-  {
-    id: '2',
-    customerId: 'user8',
-    customerName: 'user8@example.com',
-    category: '환불 요청',
-    handledBy: 'Agent',
-    duration: 25,
-    completedAt: new Date(Date.now() - 4 * 60 * 60000),
-    summary: '환불 승인 및 처리 완료',
-  },
-  {
-    id: '3',
-    customerId: 'user9',
-    customerName: 'user9@example.com',
-    category: '기술 지원',
-    handledBy: 'AI',
-    duration: 12,
-    completedAt: new Date(Date.now() - 6 * 60 * 60000),
-    summary: '로그인 문제 해결 - 비밀번호 재설정',
-  },
-  {
-    id: '4',
-    customerId: 'user10',
-    customerName: 'user10@example.com',
-    category: '계정 관리',
-    handledBy: 'Agent',
-    duration: 18,
-    completedAt: new Date(Date.now() - 1 * 24 * 60 * 60000),
-    summary: '계정 정보 업데이트 지원',
-  },
-  {
-    id: '5',
-    customerId: 'user11',
-    customerName: 'user11@example.com',
-    category: '주문 문의',
-    handledBy: 'AI',
-    duration: 5,
-    completedAt: new Date(Date.now() - 2 * 24 * 60 * 60000),
-    summary: '주문 상태 확인',
-  },
-];
+type ApiMessage = {
+  id: string;
+  sender_type: 'user' | 'ai' | 'agent';
+  content: string;
+  created_at?: string;
+};
+
+type ChatMessage = {
+  id: string;
+  sender: 'user' | 'ai' | 'agent';
+  content: string;
+  timestamp: Date;
+};
 
 export function CompletedChats() {
+  const [chats, setChats] = useState<CompletedChat[]>([]);
   const [selectedChat, setSelectedChat] = useState<CompletedChat | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [filterHandler, setFilterHandler] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [dateRange, setDateRange] = useState<string>('all');
+  const [loadingChats, setLoadingChats] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
 
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
   const handlers = ['전체', 'AI', '상담원'];
@@ -81,42 +47,60 @@ export function CompletedChats() {
     { value: 'month', label: '최근 30일' },
   ];
 
-  const filteredChats = mockCompletedChats.filter((chat) => {
-    const matchesCategory =
-      filterCategory === 'all' || chat.category === filterCategory;
-    const matchesHandler =
-      filterHandler === 'all' ||
-      (filterHandler === 'AI' && chat.handledBy === 'AI') ||
-      (filterHandler === '상담원' && chat.handledBy === 'Agent');
-    const matchesSearch = chat.customerName
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-
-    // Simple date filtering
-    let matchesDate = true;
-    if (dateRange === 'today') {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      matchesDate = chat.completedAt >= today;
-    } else if (dateRange === 'week') {
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60000);
-      matchesDate = chat.completedAt >= weekAgo;
-    } else if (dateRange === 'month') {
-      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60000);
-      matchesDate = chat.completedAt >= monthAgo;
+  const fetchCompletedChats = useCallback(async () => {
+    try {
+      setLoadingChats(true);
+      const res = await apiCall<{ chats: CompletedChat[] }>(
+        `/api/admin/chats/completed?category=${encodeURIComponent(
+          filterCategory
+        )}&handler=${encodeURIComponent(filterHandler)}&dateRange=${encodeURIComponent(
+          dateRange
+        )}&search=${encodeURIComponent(searchQuery)}`
+      );
+      setChats(res.data?.chats || []);
+    } finally {
+      setLoadingChats(false);
     }
+  }, [dateRange, filterCategory, filterHandler, searchQuery]);
 
-    return matchesCategory && matchesHandler && matchesSearch && matchesDate;
-  });
+  useEffect(() => {
+    void fetchCompletedChats();
+  }, [fetchCompletedChats]);
+
+  const filteredChats = useMemo(() => chats, [chats]);
+
+  const mapApiMessage = useCallback((m: ApiMessage): ChatMessage => {
+    return {
+      id: m.id,
+      sender: m.sender_type,
+      content: m.content,
+      timestamp: m.created_at ? new Date(m.created_at) : new Date(),
+    };
+  }, []);
+
+  const fetchMessages = useCallback(
+    async (sessionId: string) => {
+      try {
+        setLoadingMessages(true);
+        const res = await apiCall<{ messages: ApiMessage[] }>(
+          `/api/chats/messages/${encodeURIComponent(sessionId)}`
+        );
+        setMessages((res.data?.messages || []).map(mapApiMessage));
+      } finally {
+        setLoadingMessages(false);
+      }
+    },
+    [mapApiMessage]
+  );
 
   const handleExport = () => {
     alert('상담 기록을 내보냅니다.');
   };
 
   return (
-    <div className="h-full flex">
+    <div className="h-full flex overflow-hidden">
       {/* Completed list */}
-      <div className="w-96 bg-white border-r border-gray-200 flex flex-col">
+      <div className="w-96 bg-white border-r border-gray-200 flex flex-col min-h-0">
         <div className="p-4 border-b border-gray-200">
           <h2 className="text-gray-900 mb-4">상담 완료된 채팅</h2>
 
@@ -183,56 +167,71 @@ export function CompletedChats() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          {filteredChats.map((chat) => (
-            <button
-              key={chat.id}
-              onClick={() => setSelectedChat(chat)}
-              className={`w-full p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left ${
-                selectedChat?.id === chat.id ? 'bg-blue-50' : ''
-              }`}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <span className="text-gray-900">{chat.customerName}</span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-white ${
-                    chat.handledBy === 'AI' ? 'bg-blue-600' : 'bg-green-600'
-                  }`}
-                >
-                  {chat.handledBy === 'AI' ? 'AI' : '상담원'}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
-                  {chat.category}
-                </span>
-              </div>
-              <p className="text-gray-600 mb-2 line-clamp-1">{chat.summary}</p>
-              <div className="flex items-center justify-between text-gray-500">
-                <span>소요: {chat.duration}분</span>
-                <span>
-                  {chat.completedAt.toLocaleDateString('ko-KR', {
-                    month: 'short',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </span>
-              </div>
-            </button>
-          ))}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {loadingChats ? (
+            <div className="h-full flex items-center justify-center text-gray-500">
+              완료된 채팅 목록을 불러오는 중입니다...
+            </div>
+          ) : filteredChats.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-gray-500">
+              완료된 채팅이 없습니다.
+            </div>
+          ) : (
+            filteredChats.map((chat) => (
+              <button
+                key={chat.id}
+                onClick={() => {
+                  setSelectedChat(chat);
+                  void fetchMessages(chat.id);
+                }}
+                className={`w-full p-4 border-b border-gray-200 hover:bg-gray-50 transition-colors text-left ${
+                  selectedChat?.id === chat.id ? 'bg-blue-50' : ''
+                }`}
+              >
+                <div className="flex items-start justify-between mb-2">
+                  <span className="text-gray-900">{chat.customer_name}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-white ${
+                      chat.handled_by === 'AI' ? 'bg-blue-600' : 'bg-green-600'
+                    }`}
+                  >
+                    {chat.handled_by === 'AI' ? 'AI' : '상담원'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
+                    {chat.category}
+                  </span>
+                </div>
+                <p className="text-gray-600 mb-2 line-clamp-1">{chat.summary}</p>
+                <div className="flex items-center justify-between text-gray-500">
+                  <span>소요: {chat.duration}분</span>
+                  <span>
+                    {chat.completed_at
+                      ? new Date(chat.completed_at).toLocaleDateString('ko-KR', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : ''}
+                  </span>
+                </div>
+              </button>
+            ))
+          )}
         </div>
       </div>
 
       {/* Detail view */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         {selectedChat ? (
           <>
             <div className="bg-white border-b border-gray-200 p-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-gray-900 mb-1">
-                    {selectedChat.customerName}
+                    {selectedChat.customer_name}
                   </h3>
                   <div className="flex items-center gap-2">
                     <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded">
@@ -240,12 +239,12 @@ export function CompletedChats() {
                     </span>
                     <span
                       className={`px-2 py-0.5 rounded text-white ${
-                        selectedChat.handledBy === 'AI'
+                        selectedChat.handled_by === 'AI'
                           ? 'bg-blue-600'
                           : 'bg-green-600'
                       }`}
                     >
-                      처리: {selectedChat.handledBy === 'AI' ? 'AI' : '상담원'}
+                      처리: {selectedChat.handled_by === 'AI' ? 'AI' : '상담원'}
                     </span>
                   </div>
                 </div>
@@ -259,7 +258,7 @@ export function CompletedChats() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-6">
+            <div className="flex-1 overflow-y-auto p-6 min-h-0">
               <div className="max-w-3xl space-y-6">
                 {/* Summary */}
                 <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -268,7 +267,7 @@ export function CompletedChats() {
                     <div className="flex justify-between">
                       <span className="text-gray-700">고객:</span>
                       <span className="text-gray-900">
-                        {selectedChat.customerName}
+                        {selectedChat.customer_name}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -278,7 +277,7 @@ export function CompletedChats() {
                     <div className="flex justify-between">
                       <span className="text-gray-700">처리자:</span>
                       <span className="text-gray-900">
-                        {selectedChat.handledBy === 'AI' ? 'AI' : '상담원'}
+                        {selectedChat.handled_by === 'AI' ? 'AI' : '상담원'}
                       </span>
                     </div>
                     <div className="flex justify-between">
@@ -288,7 +287,9 @@ export function CompletedChats() {
                     <div className="flex justify-between">
                       <span className="text-gray-700">완료 시간:</span>
                       <span className="text-gray-900">
-                        {selectedChat.completedAt.toLocaleString('ko-KR')}
+                        {selectedChat.completed_at
+                          ? new Date(selectedChat.completed_at).toLocaleString('ko-KR')
+                          : ''}
                       </span>
                     </div>
                   </div>
@@ -304,39 +305,25 @@ export function CompletedChats() {
                 <div className="bg-white border border-gray-200 rounded-lg p-6">
                   <h3 className="text-gray-900 mb-4">전체 대화 로그</h3>
                   <div className="space-y-3 text-gray-600">
-                    <div className="flex gap-2">
-                      <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">
-                        AI
-                      </span>
-                      <p>안녕하세요! 무엇을 도와드릴까요?</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded">
-                        고객
-                      </span>
-                      <p>주문 상태를 확인하고 싶습니다.</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">
-                        AI
-                      </span>
-                      <p>주문번호를 알려주시면 확인해드리겠습니다.</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded">
-                        고객
-                      </span>
-                      <p>주문번호는 ORD-12345입니다.</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded">
-                        AI
-                      </span>
-                      <p>
-                        확인했습니다. 현재 배송 중이며, 내일 도착 예정입니다.
-                        감사합니다!
-                      </p>
-                    </div>
+                    {loadingMessages && (
+                      <div className="text-gray-500">대화 로그를 불러오는 중입니다...</div>
+                    )}
+                    {messages.map((m) => (
+                      <div key={m.id} className="flex gap-2">
+                        <span
+                          className={`px-2 py-1 rounded ${
+                            m.sender === 'user'
+                              ? 'bg-gray-100 text-gray-700'
+                              : m.sender === 'agent'
+                              ? 'bg-green-100 text-green-700'
+                              : 'bg-blue-100 text-blue-700'
+                          }`}
+                        >
+                          {m.sender === 'user' ? '고객' : m.sender === 'agent' ? '상담원' : 'AI'}
+                        </span>
+                        <p className="whitespace-pre-wrap">{m.content}</p>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
