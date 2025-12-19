@@ -122,6 +122,24 @@ CREATE TABLE chat_session_metadata (
 );
 ```
 
+### 6. orders (주문)
+> GPT Function Calling에서 주문번호 조회/배송 상태 확인 등에 사용될 기본 테이블입니다.
+```sql
+CREATE TABLE orders (
+  id VARCHAR(255) PRIMARY KEY,
+  order_number VARCHAR(50) UNIQUE NOT NULL, -- 주문번호 (예: ORD-2025-0001)
+  product_name VARCHAR(255) NOT NULL, -- 상품명(데모용 단일 상품 기준)
+  customer_id VARCHAR(255) NOT NULL, -- 주문자 ID(users.id)
+  ordered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- 주문일시
+  shipping_status ENUM('preparing','shipped','delivered','cancelled') DEFAULT 'preparing', -- 배송 상태
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (customer_id) REFERENCES users(id),
+  INDEX idx_customer (customer_id),
+  INDEX idx_ordered_at (ordered_at),
+  INDEX idx_shipping_status (shipping_status)
+);
+```
+
 ---
 
 ## API 엔드포인트
@@ -286,6 +304,92 @@ CREATE TABLE chat_session_metadata (
       // ...
     ]
   }
+}
+```
+
+---
+
+### 📦 주문 (Orders)
+
+#### GET /api/orders
+고객 본인의 주문 목록 조회 (배송상태 필터 가능)
+```http
+GET /api/orders?status=shipped
+Authorization: Bearer {token}
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "orders": [
+      {
+        "id": "order_id",
+        "order_number": "ORD-2025-0001",
+        "product_name": "프리미엄 구독권",
+        "customer_id": "user123",
+        "ordered_at": "2025-12-18T10:00:00+00:00",
+        "shipping_status": "preparing",
+        "updated_at": "2025-12-18T10:00:00+00:00"
+      }
+    ]
+  }
+}
+```
+
+#### GET /api/orders/{order_number}
+고객 본인의 주문 상세 조회
+```http
+GET /api/orders/ORD-2025-0001
+Authorization: Bearer {token}
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "order": {
+      "id": "order_id",
+      "order_number": "ORD-2025-0001",
+      "product_name": "프리미엄 구독권",
+      "customer_id": "user123",
+      "ordered_at": "2025-12-18T10:00:00+00:00",
+      "shipping_status": "preparing",
+      "updated_at": "2025-12-18T10:00:00+00:00"
+    }
+  }
+}
+```
+
+#### GET /api/admin/orders
+관리자 주문 목록 조회 (필터: `customer_id`, `status`, `order_number`)
+```http
+GET /api/admin/orders?status=delivered&order_number=ORD-2025
+Authorization: Bearer {token}
+```
+
+#### GET /api/admin/orders/{order_number}
+관리자 주문 상세 조회
+
+#### POST /api/admin/orders
+관리자 주문 생성(데모/테스트용)
+```json
+// Request
+{
+  "order_number": "ORD-2025-0001",
+  "product_name": "프리미엄 구독권",
+  "customer_id": "user123",
+  "ordered_at": "2025-12-18T10:00:00Z",
+  "shipping_status": "preparing"
+}
+```
+
+#### PATCH /api/admin/orders/{order_number}/status
+관리자 배송 상태 변경
+```json
+// Request
+{
+  "shipping_status": "shipped"
 }
 ```
 

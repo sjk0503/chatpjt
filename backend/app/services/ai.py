@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -31,7 +32,14 @@ def classify_category(message: str, categories: list[str]) -> str:
 
 def needs_human_intervention(message: str, category: str, rules_text: str) -> tuple[bool, str | None]:
     if category == "환불 요청":
-        return True, "환불 요청으로 사람 개입이 필요합니다."
+        # 환불은 필요한 정보를 먼저 수집한 뒤에만 처리 대기로 전환한다.
+        # (GPT 연동 실패 시에도 UX가 크게 흔들리지 않도록 최소한의 규칙 기반 가드)
+        upper = message.upper()
+        has_order_number = bool(re.search(r"\\bORD[- ]?\\d{4}[- ]?\\d+\\b", upper)) or bool(re.search(r"\\b\\d{8,}\\b", message))
+        has_reason = _contains_any(message, ["사유", "이유", "하자", "불량", "변심", "오배송", "파손", "취소", "반품"])
+        if has_order_number and has_reason:
+            return True, "환불 요청으로 사람 개입이 필요합니다."
+        return False, None
     if _contains_any(message, ["불만", "화나", "최악", "환불해", "신고"]):
         return True, "고객 불만 표현으로 사람 개입이 필요합니다."
     # rules_text는 현재는 참고만 (실서비스에서는 LLM 룰 기반 판단)
@@ -48,7 +56,7 @@ def generate_response(message: str, *, company_policy: str, category: str, needs
     if category == "계정 관리":
         return "계정 관련 확인을 위해 가입 이메일과 본인 확인 정보를 알려주세요."
     if category == "환불 요청":
-        return f"환불 정책은 아래와 같습니다:\n{company_policy}\n구매일과 주문번호를 알려주시면 확인해드릴게요."
+        return f"환불 처리 도와드리겠습니다. 주문번호와 환불/반품 사유를 알려주시면 빠르게 확인해드릴게요.\n(응답 기준 참고)\n{company_policy}"
     return "문의 내용을 확인했습니다. 추가로 필요한 정보가 있으신가요?"
 
 
@@ -76,4 +84,3 @@ def process_message(
         wait_time_minutes=response_wait_time if needs_human else None,
         reason=reason,
     )
-

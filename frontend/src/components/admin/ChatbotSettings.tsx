@@ -10,7 +10,6 @@ export function ChatbotSettings() {
   const [newCategory, setNewCategory] = useState('');
   const [humanInterventionRules, setHumanInterventionRules] = useState('');
   const [responseWaitTime, setResponseWaitTime] = useState('5');
-  const [autoClose, setAutoClose] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +26,6 @@ export function ChatbotSettings() {
           categories: string[];
           human_intervention_rules: string;
           response_wait_time: number;
-          auto_close: boolean;
         }>('/api/admin/chatbot/settings');
 
         if (!res.data) throw new Error('설정 정보를 불러오지 못했습니다.');
@@ -38,7 +36,6 @@ export function ChatbotSettings() {
         setCategories(res.data.categories || []);
         setHumanInterventionRules(res.data.human_intervention_rules);
         setResponseWaitTime(String(res.data.response_wait_time ?? 5));
-        setAutoClose(Boolean(res.data.auto_close));
       } catch (e: any) {
         setError(e?.message || '설정 정보를 불러오지 못했습니다.');
       } finally {
@@ -75,7 +72,6 @@ export function ChatbotSettings() {
             categories,
             human_intervention_rules: humanInterventionRules,
             response_wait_time: parseInt(responseWaitTime || '5', 10),
-            auto_close: autoClose,
           }),
         },
         { auth: true }
@@ -94,7 +90,7 @@ export function ChatbotSettings() {
         <div>
           <h2 className="text-gray-900 mb-2">챗봇 설정</h2>
           <p className="text-gray-600">
-            AI 상담 챗봇의 동작 방식과 정책을 설정합니다
+            AI 상담 챗봇의 동작 방식과 응답 기준을 설정합니다
           </p>
         </div>
         {error && (
@@ -132,13 +128,13 @@ export function ChatbotSettings() {
           </div>
         </div>
 
-        {/* Company policy */}
+        {/* Response guidelines */}
         <div className="bg-white border border-gray-200 rounded-lg p-6">
-          <h3 className="text-gray-900 mb-4">2. 사내 정책 관리</h3>
+          <h3 className="text-gray-900 mb-4">2. 응답 기준 설정</h3>
           <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg flex gap-2">
             <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
             <p className="text-blue-800">
-              입력하신 정책은 AI가 상담 시 참고하여 응답합니다.
+              입력하신 기준을 AI가 상담 시 참고합니다. 정책 원문을 길게 나열하기보다, 톤과 필수 안내만 적어주세요.
             </p>
           </div>
           <textarea
@@ -146,7 +142,7 @@ export function ChatbotSettings() {
             onChange={(e) => setCompanyPolicy(e.target.value)}
             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
             rows={6}
-            placeholder="회사 정책, 규정, FAQ 등을 입력하세요"
+            placeholder="응답 톤, 필수 안내, 정책 요약 등을 입력하세요"
             disabled={loading}
           />
         </div>
@@ -243,33 +239,6 @@ export function ChatbotSettings() {
               </p>
             </div>
 
-            <div>
-              <label className="block text-gray-700 mb-2">채팅 종료 방식</label>
-              <div className="space-y-2">
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="closeMethod"
-                    checked={autoClose}
-                    onChange={() => setAutoClose(true)}
-                    className="w-4 h-4 text-blue-600"
-                    disabled={loading}
-                  />
-                  <span className="text-gray-700">AI가 자동으로 종료</span>
-                </label>
-                <label className="flex items-center gap-2">
-                  <input
-                    type="radio"
-                    name="closeMethod"
-                    checked={!autoClose}
-                    onChange={() => setAutoClose(false)}
-                    className="w-4 h-4 text-blue-600"
-                    disabled={loading}
-                  />
-                  <span className="text-gray-700">사용자 요청 시에만 종료</span>
-                </label>
-              </div>
-            </div>
           </div>
         </div>
 

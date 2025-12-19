@@ -38,6 +38,19 @@ export function CompletedChats() {
   const [loadingChats, setLoadingChats] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
 
+  const sortMessages = useCallback((list: ChatMessage[]) => {
+    const senderPriority: Record<ChatMessage['sender'], number> = { user: 0, agent: 1, ai: 2 };
+    return [...list].sort((a, b) => {
+      const tA = a.timestamp.getTime();
+      const tB = b.timestamp.getTime();
+      if (tA !== tB) return tA - tB;
+      const pA = senderPriority[a.sender] ?? 99;
+      const pB = senderPriority[b.sender] ?? 99;
+      if (pA !== pB) return pA - pB;
+      return a.id.localeCompare(b.id);
+    });
+  }, []);
+
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
   const handlers = ['전체', 'AI', '상담원'];
   const dateRanges = [
@@ -85,12 +98,12 @@ export function CompletedChats() {
         const res = await apiCall<{ messages: ApiMessage[] }>(
           `/api/chats/messages/${encodeURIComponent(sessionId)}`
         );
-        setMessages((res.data?.messages || []).map(mapApiMessage));
+        setMessages(sortMessages((res.data?.messages || []).map(mapApiMessage)));
       } finally {
         setLoadingMessages(false);
       }
     },
-    [mapApiMessage]
+    [mapApiMessage, sortMessages]
   );
 
   const handleExport = () => {

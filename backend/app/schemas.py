@@ -69,6 +69,28 @@ class CompleteRequest(BaseModel):
     summary: str = Field(min_length=1)
 
 
+class OrderOut(BaseModel):
+    id: str
+    order_number: str
+    product_name: str
+    customer_id: str
+    ordered_at: datetime | None = None
+    shipping_status: str
+    updated_at: datetime | None = None
+
+
+class CreateOrderRequest(BaseModel):
+    order_number: str = Field(min_length=1)
+    product_name: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1)
+    ordered_at: datetime | None = None
+    shipping_status: Literal["preparing", "shipped", "delivered", "cancelled"] | None = None
+
+
+class UpdateOrderStatusRequest(BaseModel):
+    shipping_status: Literal["preparing", "shipped", "delivered", "cancelled"]
+
+
 class ChatbotSettingsOut(BaseModel):
     greeting: str
     farewell: str
@@ -87,4 +109,3 @@ class ChatbotSettingsUpdate(BaseModel):
     human_intervention_rules: str
     response_wait_time: int
     auto_close: bool
-

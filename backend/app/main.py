@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from .config import load_settings
-from .routes import admin, auth, chatbot, chats
+from .routes import admin, auth, chatbot, chats, orders
 from .security import decode_token
 from .ws import manager
 
@@ -30,6 +30,8 @@ def create_app() -> FastAPI:
     app.include_router(chats.router)
     app.include_router(admin.router)
     app.include_router(chatbot.router)
+    app.include_router(orders.router)
+    app.include_router(orders.admin_router)
 
     @app.get("/health")
     def health() -> dict[str, str]:

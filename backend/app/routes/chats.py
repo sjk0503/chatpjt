@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..db import db_conn, execute, fetch_all, fetch_one, json_dumps, json_loads, utc_now
 from ..schemas import ApiResponse, MessageOut, SendMessageRequest, SessionOut, UserOut
-from ..services.ai import process_message
+from ..services.chat_ai import decide_ai_reply
+from ..services.chat_summary import build_completed_summary_text, build_pending_summary_text
 from ..ws import manager
 from .auth import get_current_user
 from .chatbot import get_settings_map
@@ -183,34 +184,59 @@ async def send_message(req: SendMessageRequest, current_user: UserOut = Depends(
             # 상담원 메시지는 여기서 종료
             return ApiResponse(success=True, data={"message": message_out})
 
-        if session["handler_type"] == "agent":
+        # pending/completed 상태에서는 AI가 추가 응답하지 않는다(사람/처리 대기 흐름 유지).
+        if session["handler_type"] == "agent" or session["status"] != "active":
             return ApiResponse(success=True, data={"message": message_out})
 
         settings = get_settings_map(conn)
-        categories = json_loads(settings.get("categories")) or ["주문 문의", "환불 요청", "기술 지원", "계정 관리"]
-        company_policy = settings.get("company_policy") or ""
-        human_rules = settings.get("human_intervention_rules") or ""
-        response_wait_time = int(settings.get("response_wait_time") or 5)
+        conversation_rows = fetch_all(
+            conn,
+            "SELECT sender_type, content, created_at FROM messages WHERE session_id=%s ORDER BY created_at ASC",
+            (req.session_id,),
+        )
+        admin_instruction_row = fetch_one(
+            conn,
+            "SELECT content FROM messages WHERE session_id=%s AND sender_type='agent' ORDER BY created_at DESC LIMIT 1",
+            (req.session_id,),
+        )
+        admin_instruction = (admin_instruction_row or {}).get("content")
+        customer_profile = ""
+        try:
+            user_row = fetch_one(conn, "SELECT email, name FROM users WHERE id=%s", (session.get("customer_id"),))
+            if user_row:
+                customer_profile = f"id={session.get('customer_id')}, email={user_row.get('email')}, name={user_row.get('name')}"
+        except Exception:
+            customer_profile = f"id={session.get('customer_id')}"
 
-        ai = process_message(
-            content,
-            company_policy=company_policy,
-            categories=list(categories),
-            human_intervention_rules=human_rules,
-            response_wait_time=response_wait_time,
+        decision = await decide_ai_reply(
+            session_id=req.session_id,
+            user_message=content,
+            conversation_rows=conversation_rows,
+            current_category=session.get("category"),
+            settings=settings,
+            customer_id=session.get("customer_id"),
+            customer_profile=customer_profile,
+            admin_instruction=admin_instruction,
         )
 
-        if session.get("category") is None and ai.category:
-            execute(conn, "UPDATE chat_sessions SET category=%s WHERE id=%s", (ai.category, req.session_id))
+        if decision.category and decision.category != session.get("category"):
+            execute(conn, "UPDATE chat_sessions SET category=%s WHERE id=%s", (decision.category, req.session_id))
 
         next_admin_bucket = "active"
-        if ai.needs_human and session["status"] != "pending":
+        if decision.needs_human and session["status"] != "pending":
             execute(
                 conn,
                 "UPDATE chat_sessions SET status='pending', pending_at=%s WHERE id=%s",
                 (now, req.session_id),
             )
             next_admin_bucket = "pending"
+            # pending 요약은 항상 별도 요약기로 생성(모델이 summary에 'pending' 같은 값을 넣는 경우 방지)
+            try:
+                pending_summary = await build_pending_summary_text(req.session_id, latest_user_message=content)
+            except Exception:
+                pending_summary = ""
+            if pending_summary:
+                execute(conn, "UPDATE chat_sessions SET summary=%s WHERE id=%s", (pending_summary, req.session_id))
             await manager.broadcast_to_admins(
                 {
                     "type": "session_status_changed",
@@ -225,7 +251,7 @@ async def send_message(req: SendMessageRequest, current_user: UserOut = Depends(
                         "session": {
                             "id": req.session_id,
                             "customer_name": (customer or {}).get("email"),
-                            "category": ai.category,
+                            "category": decision.category,
                             "started_at": _dt_to_iso(session.get("started_at")),
                         }
                     },
@@ -233,19 +259,63 @@ async def send_message(req: SendMessageRequest, current_user: UserOut = Depends(
                 require_subscription="pending",
             )
 
+        # AI가 종료를 판단한 경우: 종료 멘트 + 세션 완료 처리(고객 입력 잠금/자동 로그아웃 UX 트리거)
+        if decision.complete:
+            completed_summary = (decision.summary or "").strip()
+            if not completed_summary:
+                try:
+                    completed_summary = await build_completed_summary_text(req.session_id)
+                except Exception:
+                    completed_summary = ""
+
+            started_at = session.get("started_at")
+            duration = 0
+            if started_at:
+                now_naive = now.astimezone(timezone.utc).replace(tzinfo=None) if now.tzinfo is not None else now
+                started_at_naive = (
+                    started_at.astimezone(timezone.utc).replace(tzinfo=None) if started_at.tzinfo is not None else started_at
+                )
+                duration = int((now_naive - started_at_naive).total_seconds() // 60)
+
+            execute(
+                conn,
+                "UPDATE chat_sessions SET status='completed', completed_at=%s, duration_minutes=%s, summary=%s WHERE id=%s",
+                (now, duration, completed_summary or None, req.session_id),
+            )
+
+            ai_msg_id = uuid.uuid4().hex
+            execute(
+                conn,
+                "INSERT INTO messages (id, session_id, sender_type, sender_id, content, attachments, is_read, created_at) VALUES (%s,%s,'ai',NULL,%s,NULL,TRUE,%s)",
+                (ai_msg_id, req.session_id, decision.response, now),
+            )
+            execute(
+                conn,
+                "UPDATE chat_session_metadata SET last_message=%s, last_message_at=%s WHERE session_id=%s",
+                (decision.response, now, req.session_id),
+            )
+            await manager.send_to_user(
+                session["customer_id"],
+                {"type": "session_completed", "data": {"session_id": req.session_id, "message": decision.response}},
+            )
+            await manager.broadcast_to_admins(
+                {"type": "session_status_changed", "data": {"session_id": req.session_id, "status": "completed", "handler_type": "ai"}}
+            )
+            return ApiResponse(success=True, data={"message": message_out})
+
         ai_msg_id = uuid.uuid4().hex
         execute(
             conn,
             "INSERT INTO messages (id, session_id, sender_type, sender_id, content, attachments, is_read, created_at) VALUES (%s,%s,'ai',NULL,%s,NULL,TRUE,%s)",
-            (ai_msg_id, req.session_id, ai.response, now),
+            (ai_msg_id, req.session_id, decision.response, now),
         )
         execute(
             conn,
             "UPDATE chat_session_metadata SET last_message=%s, last_message_at=%s WHERE session_id=%s",
-            (ai.response, now, req.session_id),
+            (decision.response, now, req.session_id),
         )
         ai_row = fetch_one(conn, "SELECT * FROM messages WHERE id=%s", (ai_msg_id,))
-        ai_out = _to_message_out(ai_row).model_dump() if ai_row else {"id": ai_msg_id, "content": ai.response}
+        ai_out = _to_message_out(ai_row).model_dump() if ai_row else {"id": ai_msg_id, "content": decision.response}
 
     await manager.send_to_user(session["customer_id"], {"type": "new_message", "data": {"message": ai_out}})
     await manager.broadcast_to_admins(

@@ -8,7 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from ..db import db_conn, execute, fetch_all, fetch_one, utc_now
 from ..db import json_loads
 from ..schemas import ApiResponse, CompleteRequest, MessageOut, ProvideInfoRequest, TakeoverRequest, UserOut
-from ..services.ai import process_message
+from ..services.chat_ai import decide_ai_reply
+from ..services.chat_summary import build_admin_summary, build_completed_summary_text
 from ..ws import manager
 from .auth import get_current_user
 from .chatbot import get_settings_map
@@ -120,6 +121,7 @@ def list_pending_chats(
               u.email AS customer_name,
               s.category,
               s.pending_at,
+              s.summary,
               m.last_message,
               m.priority
             FROM chat_sessions s
@@ -138,18 +140,20 @@ def list_pending_chats(
         if search and search not in (r.get("customer_name") or "").lower():
             continue
         pending_at: datetime | None = r.get("pending_at")
-        if pending_at and pending_at.tzinfo is None:
-            pending_at = pending_at.replace(tzinfo=timezone.utc)
-        wait_minutes = 0
         if pending_at:
-            wait_minutes = int((now - pending_at).total_seconds() // 60)
+            pending_at_aware = pending_at.replace(tzinfo=timezone.utc) if pending_at.tzinfo is None else pending_at.astimezone(timezone.utc)
+            now_aware = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
+            wait_minutes = int((now_aware - pending_at_aware).total_seconds() // 60)
+        else:
+            wait_minutes = 0
+        issue_preview = (r.get("summary") or "").strip() or (r.get("last_message") or "").strip() or "사람 개입이 필요합니다."
         chats.append(
             {
                 "id": r["id"],
                 "customer_id": r["customer_id"],
                 "customer_name": r.get("customer_name"),
                 "category": r.get("category") or "미분류",
-                "issue": r.get("last_message") or "사람 개입이 필요합니다.",
+                "issue": issue_preview,
                 "wait_time": wait_minutes,
                 "priority": (r.get("priority") or "medium"),
             }
@@ -265,46 +269,122 @@ async def provide_info(
     current_user: UserOut = Depends(get_current_user),
 ) -> ApiResponse:
     _require_admin(current_user)
-    now = utc_now()
 
     with db_conn() as conn:
         session = fetch_one(conn, "SELECT * FROM chat_sessions WHERE id=%s", (session_id,))
         if not session:
             return ApiResponse(success=False, message="세션을 찾을 수 없습니다.")
 
-        settings = get_settings_map(conn)
-        categories = settings.get("categories")
-        company_policy = settings.get("company_policy") or ""
-        human_rules = settings.get("human_intervention_rules") or ""
-        wait_time = int(settings.get("response_wait_time") or 5)
+        # pending → active로 복귀시키고, 관리자 지침을 그대로 전달
+        now = utc_now()
+        execute(conn, "UPDATE chat_sessions SET status='active', handler_type='ai', pending_at=NULL WHERE id=%s", (session_id,))
 
-        # pending → active로 복귀시키고 AI가 응답하도록 처리
-        execute(conn, "UPDATE chat_sessions SET status='active', handler_type='ai' WHERE id=%s", (session_id,))
-        ai = process_message(
-            req.info,
-            company_policy=company_policy,
-            categories=list(categories) if isinstance(categories, list) else ["주문 문의", "환불 요청", "기술 지원", "계정 관리"],
-            human_intervention_rules=human_rules,
-            response_wait_time=wait_time,
-        )
-
+        admin_reply = req.info.strip()
         msg_id = uuid.uuid4().hex
         execute(
             conn,
-            "INSERT INTO messages (id, session_id, sender_type, sender_id, content, attachments, is_read, created_at) VALUES (%s,%s,'ai',NULL,%s,NULL,TRUE,%s)",
-            (msg_id, session_id, ai.response, now),
+            "INSERT INTO messages (id, session_id, sender_type, sender_id, content, attachments, is_read, created_at) VALUES (%s,%s,'agent',NULL,%s,NULL,TRUE,%s)",
+            (msg_id, session_id, admin_reply, now),
         )
         execute(
             conn,
             "UPDATE chat_session_metadata SET last_message=%s, last_message_at=%s WHERE session_id=%s",
-            (ai.response, now, session_id),
+            (admin_reply, now, session_id),
         )
-        msg_row = fetch_one(conn, "SELECT * FROM messages WHERE id=%s", (msg_id,))
-        message_out = _to_message_out(msg_row) if msg_row else {"id": msg_id, "content": ai.response}
 
-    await manager.send_to_user(session["customer_id"], {"type": "new_message", "data": {"message": message_out}})
+        # 대화 맥락과 설정을 불러와 GPT로 실제 고객 응답을 생성
+        messages = fetch_all(conn, "SELECT sender_type, content, created_at FROM messages WHERE session_id=%s ORDER BY created_at ASC", (session_id,))
+        settings = get_settings_map(conn)
+        customer_profile = ""
+        try:
+            user_row = fetch_one(conn, "SELECT email, name FROM users WHERE id=%s", (session.get("customer_id"),))
+            if user_row:
+                customer_profile = f"id={session.get('customer_id')}, email={user_row.get('email')}, name={user_row.get('name')}"
+        except Exception:
+            customer_profile = f"id={session.get('customer_id')}"
+
+        last_user_row = fetch_one(
+            conn,
+            "SELECT content FROM messages WHERE session_id=%s AND sender_type='user' ORDER BY created_at DESC LIMIT 1",
+            (session_id,),
+        )
+        last_user_message = (last_user_row or {}).get("content") or admin_reply
+
+        decision = await decide_ai_reply(
+            session_id=session_id,
+            user_message=last_user_message,
+            conversation_rows=messages,
+            current_category=session.get("category"),
+            settings=settings,
+            customer_id=session.get("customer_id"),
+            customer_profile=customer_profile,
+            admin_instruction=admin_reply,
+        )
+
+        if decision.category and decision.category != session.get("category"):
+            execute(conn, "UPDATE chat_sessions SET category=%s WHERE id=%s", (decision.category, session_id))
+
+        # 종료 판단 시 완료 처리
+        if decision.complete:
+            try:
+                completed_summary = await build_completed_summary_text(session_id)
+            except Exception:
+                completed_summary = decision.summary or ""
+
+            started_at: datetime | None = session.get("started_at")
+            duration = 0
+            if started_at:
+                now_naive = now.astimezone(timezone.utc).replace(tzinfo=None) if now.tzinfo is not None else now
+                started_at_naive = started_at.astimezone(timezone.utc).replace(tzinfo=None) if started_at.tzinfo is not None else started_at
+                duration = int((now_naive - started_at_naive).total_seconds() // 60)
+
+            execute(
+                conn,
+                "UPDATE chat_sessions SET status='completed', completed_at=%s, duration_minutes=%s, summary=%s WHERE id=%s",
+                (now, duration, completed_summary or None, session_id),
+            )
+
+            ai_msg_id = uuid.uuid4().hex
+            execute(
+                conn,
+                "INSERT INTO messages (id, session_id, sender_type, sender_id, content, attachments, is_read, created_at) VALUES (%s,%s,'ai',NULL,%s,NULL,TRUE,%s)",
+                (ai_msg_id, session_id, decision.response, now),
+            )
+            execute(
+                conn,
+                "UPDATE chat_session_metadata SET last_message=%s, last_message_at=%s WHERE session_id=%s",
+                (decision.response, now, session_id),
+            )
+            ai_row = fetch_one(conn, "SELECT * FROM messages WHERE id=%s", (ai_msg_id,))
+            ai_out = _to_message_out(ai_row) if ai_row else {"id": ai_msg_id, "content": decision.response}
+        else:
+            ai_msg_id = uuid.uuid4().hex
+            execute(
+                conn,
+                "INSERT INTO messages (id, session_id, sender_type, sender_id, content, attachments, is_read, created_at) VALUES (%s,%s,'ai',NULL,%s,NULL,TRUE,%s)",
+                (ai_msg_id, session_id, decision.response, now),
+            )
+            execute(
+                conn,
+                "UPDATE chat_session_metadata SET last_message=%s, last_message_at=%s WHERE session_id=%s",
+                (decision.response, now, session_id),
+            )
+            ai_row = fetch_one(conn, "SELECT * FROM messages WHERE id=%s", (ai_msg_id,))
+            ai_out = _to_message_out(ai_row) if ai_row else {"id": ai_msg_id, "content": decision.response}
+
+    # 고객에게는 GPT가 생성한 응답만 전달한다.
+    await manager.send_to_user(session["customer_id"], {"type": "new_message", "data": {"message": ai_out}})
     await manager.broadcast_to_admins({"type": "session_status_changed", "data": {"session_id": session_id, "status": "active", "handler_type": "ai"}})
-    return ApiResponse(success=True, message="AI에게 정보를 전달했습니다. AI가 고객에게 응답합니다.")
+    if decision.complete:
+        await manager.send_to_user(session["customer_id"], {"type": "session_completed", "data": {"session_id": session_id, "message": decision.response}})
+        await manager.broadcast_to_admins({"type": "session_status_changed", "data": {"session_id": session_id, "status": "completed", "handler_type": session.get("handler_type")}})
+    else:
+        await manager.broadcast_to_admins(
+            {"type": "new_message", "data": {"session_id": session_id, "message": ai_out}},
+            require_subscription="active",
+        )
+
+    return ApiResponse(success=True, message="AI에게 정보를 전달했습니다. AI가 고객에게 응답했습니다.")
 
 
 @router.post("/chats/{session_id}/complete", response_model=ApiResponse)
@@ -332,10 +412,22 @@ async def complete_chat(
             if started_at_naive.tzinfo is not None:
                 started_at_naive = started_at_naive.astimezone(timezone.utc).replace(tzinfo=None)
             duration = int((now_naive - started_at_naive).total_seconds() // 60)
+        summary_text = (req.summary or "").strip()
+        if not summary_text:
+            # pydantic에서 min_length=1이라 보통 비어있지 않지만, 안전하게 fallback 처리
+            summary_text = "상담이 종료되었습니다."
+        # 가능하면 종료 요약을 GPT로 생성해 저장한다(실패 시 요청 값 유지).
+        try:
+            gpt_summary = await build_completed_summary_text(session_id)
+            if (gpt_summary or "").strip():
+                summary_text = gpt_summary.strip()
+        except Exception:
+            pass
+
         execute(
             conn,
             "UPDATE chat_sessions SET status='completed', completed_at=%s, duration_minutes=%s, summary=%s WHERE id=%s",
-            (now, duration, req.summary, session_id),
+            (now, duration, summary_text, session_id),
         )
 
         settings = get_settings_map(conn)
@@ -353,46 +445,30 @@ async def complete_chat(
 
 
 @router.get("/chats/{session_id}/summary", response_model=ApiResponse)
-def get_summary(session_id: str, current_user: UserOut = Depends(get_current_user)) -> ApiResponse:
+async def get_summary(session_id: str, current_user: UserOut = Depends(get_current_user)) -> ApiResponse:
     _require_admin(current_user)
-    with db_conn() as conn:
-        session = fetch_one(
-            conn,
-            """
-            SELECT s.id, s.customer_id, s.started_at, u.email AS customer_email, s.category
-            FROM chat_sessions s
-            JOIN users u ON u.id=s.customer_id
-            WHERE s.id=%s
-            """,
-            (session_id,),
+    try:
+        s = await build_admin_summary(session_id)
+        return ApiResponse(
+            success=True,
+            data={
+                "summary": {
+                    "core_summary": s.core_summary,
+                    "current_issues": s.current_issues,
+                    "customer_info": {"email": s.customer_email, "started_at": s.started_at},
+                }
+            },
         )
-        if not session:
-            return ApiResponse(success=False, message="세션을 찾을 수 없습니다.")
-        last_user_msg = fetch_one(
-            conn,
-            "SELECT content FROM messages WHERE session_id=%s AND sender_type='user' ORDER BY created_at DESC LIMIT 1",
-            (session_id,),
-        )
-
-    core_summary = f"고객이 '{session.get('category') or '미분류'}' 관련 문의를 하고 있습니다."
-    current_issues = []
-    if session.get("category") == "주문 문의":
-        current_issues.append("주문번호 미확인")
-    if session.get("category") == "환불 요청":
-        current_issues.append("구매일/주문번호 확인 필요")
-    if last_user_msg and "오류" in (last_user_msg.get("content") or ""):
-        current_issues.append("오류 내용 확인 필요")
+    except ValueError:
+        return ApiResponse(success=False, message="세션을 찾을 수 없습니다.")
 
     return ApiResponse(
         success=True,
         data={
             "summary": {
-                "core_summary": core_summary,
-                "current_issues": current_issues,
-                "customer_info": {
-                    "email": session.get("customer_email"),
-                    "started_at": _dt_to_iso(session.get("started_at")),
-                },
+                "core_summary": "상담 내용을 요약하는 중입니다.",
+                "current_issues": [],
+                "customer_info": {"email": None, "started_at": None},
             }
         },
     )

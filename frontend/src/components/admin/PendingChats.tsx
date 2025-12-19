@@ -14,13 +14,30 @@ interface PendingChat {
   priority: 'high' | 'medium' | 'low';
 }
 
-export function PendingChats({ user }: { user: AppUser }) {
+interface ApiMessage {
+  id: string;
+  session_id: string;
+  sender_type: 'user' | 'ai' | 'agent';
+  content: string;
+  created_at?: string;
+}
+
+interface ChatMessage {
+  id: string;
+  sender: 'user' | 'ai' | 'agent';
+  content: string;
+  timestamp: Date;
+}
+
+export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwitchToActive?: (sessionId?: string) => void }) {
   const [chats, setChats] = useState<PendingChat[]>([]);
   const [selectedChat, setSelectedChat] = useState<PendingChat | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [responseText, setResponseText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
 
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
 
@@ -51,6 +68,10 @@ export function PendingChats({ user }: { user: AppUser }) {
         const status = payload.data?.status;
         if (status !== 'pending') {
           void fetchPendingChats();
+          if (selectedChat?.id === payload.data?.session_id) {
+            setSelectedChat(null);
+            setMessages([]);
+          }
         }
       }
     },
@@ -65,6 +86,51 @@ export function PendingChats({ user }: { user: AppUser }) {
   const filteredChats = useMemo(() => {
     return chats;
   }, [chats]);
+
+  const sortMessages = useCallback((list: ChatMessage[]) => {
+    const senderPriority: Record<ChatMessage['sender'], number> = { user: 0, agent: 1, ai: 2 };
+    return [...list].sort((a, b) => {
+      const tA = a.timestamp.getTime();
+      const tB = b.timestamp.getTime();
+      if (tA !== tB) return tA - tB;
+      const pA = senderPriority[a.sender] ?? 99;
+      const pB = senderPriority[b.sender] ?? 99;
+      if (pA !== pB) return pA - pB;
+      return a.id.localeCompare(b.id);
+    });
+  }, []);
+
+  const mapApiMessage = useCallback((m: ApiMessage): ChatMessage => {
+    return {
+      id: m.id,
+      sender: m.sender_type,
+      content: m.content,
+      timestamp: m.created_at ? new Date(m.created_at) : new Date(),
+    };
+  }, []);
+
+  const fetchMessages = useCallback(
+    async (sessionId: string) => {
+      try {
+        setLoadingMessages(true);
+        const res = await apiCall<{ messages: ApiMessage[] }>(
+          `/api/chats/messages/${encodeURIComponent(sessionId)}`
+        );
+        setMessages(sortMessages((res.data?.messages || []).map(mapApiMessage)));
+      } finally {
+        setLoadingMessages(false);
+      }
+    },
+    [mapApiMessage, sortMessages]
+  );
+
+  useEffect(() => {
+    if (!selectedChat) {
+      setMessages([]);
+      return;
+    }
+    void fetchMessages(selectedChat.id);
+  }, [fetchMessages, selectedChat]);
 
   const handleProvideInfo = useCallback(async () => {
     if (!responseText.trim() || !selectedChat) return;
@@ -84,10 +150,13 @@ export function PendingChats({ user }: { user: AppUser }) {
       method: 'POST',
       body: JSON.stringify({ agent_id: user.id }),
     });
-    alert('상담원 모드로 전환되었습니다. 상담 중인 채팅 탭에서 계속 진행할 수 있습니다.');
+    const go = window.confirm('상담원 모드로 전환되었습니다. 상담 중인 채팅 탭으로 이동하시겠습니까?');
+    if (go && onSwitchToActive) {
+      onSwitchToActive(selectedChat.id);
+    }
     setSelectedChat(null);
     await fetchPendingChats();
-  }, [fetchPendingChats, selectedChat, user.id]);
+  }, [fetchPendingChats, onSwitchToActive, selectedChat, user.id]);
 
   return (
     <div className="h-full flex overflow-hidden">
@@ -108,6 +177,7 @@ export function PendingChats({ user }: { user: AppUser }) {
           </div>
 
           <div className="mb-3">
+            <label className="block text-gray-700 mb-2">카테고리</label>
             <select
               value={filterCategory === 'all' ? '전체' : filterCategory}
               onChange={(e) =>
@@ -271,25 +341,70 @@ export function PendingChats({ user }: { user: AppUser }) {
                         className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                         rows={4}
                       />
-                      <button
-                        onClick={handleProvideInfo}
-                        disabled={!responseText.trim()}
-                        className="mt-2 flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
-                      >
-                        <CheckCircle className="w-4 h-4" />
-                        AI에게 정보 전달
-                      </button>
-                    </div>
-
-                    <div className="border-t border-gray-200 pt-4">
-                      <button
-                        onClick={handleDirectResponse}
-                        className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-                      >
-                        직접 응답하기
-                      </button>
+                      <div className="mt-3 space-y-3">
+                        <button
+                          onClick={handleProvideInfo}
+                          disabled={!responseText.trim()}
+                          className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                        >
+                          <CheckCircle className="w-4 h-4" />
+                          AI에게 정보 전달
+                        </button>
+                        <button
+                          onClick={handleDirectResponse}
+                          className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                        >
+                          직접 응답하기
+                        </button>
+                      </div>
                     </div>
                   </div>
+                </div>
+
+                {/* Full conversation log (bottom) */}
+                <div className="bg-white border border-gray-200 rounded-lg p-6">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-gray-900">전체 대화 로그</h3>
+                    <button
+                      onClick={() => selectedChat && fetchMessages(selectedChat.id)}
+                      className="text-sm text-blue-600 hover:underline"
+                    >
+                      새로고침
+                    </button>
+                  </div>
+                  {loadingMessages && (
+                    <div className="text-gray-500 mb-2">대화 로그를 불러오는 중입니다...</div>
+                  )}
+                  {messages.length === 0 ? (
+                    <p className="text-gray-500">대화가 없습니다.</p>
+                  ) : (
+                    <div className="space-y-3 text-gray-600 max-h-[420px] overflow-y-auto pr-1">
+                      {messages.map((m) => (
+                        <div key={m.id} className="flex gap-2">
+                          <span
+                            className={`px-2 py-1 rounded ${
+                              m.sender === 'user'
+                                ? 'bg-gray-100 text-gray-700'
+                                : m.sender === 'agent'
+                                ? 'bg-green-100 text-green-700'
+                                : 'bg-blue-100 text-blue-700'
+                            }`}
+                          >
+                            {m.sender === 'user' ? '고객' : m.sender === 'agent' ? '상담원' : 'AI'}
+                          </span>
+                          <div className="flex-1">
+                            <p className="whitespace-pre-wrap">{m.content}</p>
+                            <div className="text-xs text-gray-400">
+                              {m.timestamp.toLocaleTimeString('ko-KR', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

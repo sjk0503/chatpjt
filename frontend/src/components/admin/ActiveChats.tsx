@@ -50,23 +50,42 @@ export function ActiveChats({ user }: { user: AppUser }) {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [summary, setSummary] = useState<SummaryData['summary'] | null>(null);
   const [closingChat, setClosingChat] = useState(false);
+  const [filterHandler, setFilterHandler] = useState<string>('all');
+
+  const sortMessages = useCallback((list: ChatMessage[]) => {
+    const senderPriority: Record<ChatMessage['sender'], number> = { user: 0, agent: 1, ai: 2 };
+    return [...list].sort((a, b) => {
+      const tA = a.timestamp.getTime();
+      const tB = b.timestamp.getTime();
+      if (tA !== tB) return tA - tB;
+      const pA = senderPriority[a.sender] ?? 99;
+      const pB = senderPriority[b.sender] ?? 99;
+      if (pA !== pB) return pA - pB;
+      return a.id.localeCompare(b.id);
+    });
+  }, []);
 
   const chatsRef = useRef<ChatSession[]>([]);
   const loadingChatsRef = useRef(false);
   const lastChatsRefreshRef = useRef(0);
 
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
+  const handlers = ['전체', 'AI', '상담원'];
 
   const filteredChats = useMemo(() => {
     return chats.filter((chat) => {
       const matchesCategory =
         filterCategory === 'all' || chat.category === filterCategory;
+      const matchesHandler =
+        filterHandler === 'all' ||
+        (filterHandler === 'AI' && chat.status === 'ai') ||
+        (filterHandler === '상담원' && chat.status === 'agent');
       const matchesSearch = (chat.customer_name || '')
         .toLowerCase()
         .includes(searchQuery.toLowerCase());
-      return matchesCategory && matchesSearch;
+      return matchesCategory && matchesHandler && matchesSearch;
     });
-  }, [chats, filterCategory, searchQuery]);
+  }, [chats, filterCategory, filterHandler, searchQuery]);
 
   const fetchChats = useCallback(async () => {
     try {
@@ -93,6 +112,7 @@ export function ActiveChats({ user }: { user: AppUser }) {
   useEffect(() => {
     void fetchChats();
   }, [fetchChats]);
+
 
   const ensureChatVisible = useCallback(
     (sessionId: string | null | undefined) => {
@@ -123,12 +143,12 @@ export function ActiveChats({ user }: { user: AppUser }) {
         const res = await apiCall<{ messages: ApiMessage[] }>(
           `/api/chats/messages/${encodeURIComponent(sessionId)}`
         );
-        setMessages((res.data?.messages || []).map(mapApiMessage));
+        setMessages(sortMessages((res.data?.messages || []).map(mapApiMessage)));
       } finally {
         setLoadingMessages(false);
       }
     },
-    [mapApiMessage]
+    [mapApiMessage, sortMessages]
   );
 
   const fetchSummary = useCallback(async (sessionId: string) => {
@@ -167,10 +187,11 @@ export function ActiveChats({ user }: { user: AppUser }) {
     if (res.data?.message) {
       setMessages((prev) => {
         const mapped = mapApiMessage(res.data!.message);
-        return prev.some((x) => x.id === mapped.id) ? prev : [...prev, mapped];
+        if (prev.some((x) => x.id === mapped.id)) return prev;
+        return sortMessages([...prev, mapped]);
       });
     }
-  }, [agentMessage, mapApiMessage, selectedChat]);
+  }, [agentMessage, mapApiMessage, selectedChat, sortMessages]);
 
   const handleCompleteChat = useCallback(async () => {
     if (!selectedChat || closingChat) return;
@@ -178,8 +199,7 @@ export function ActiveChats({ user }: { user: AppUser }) {
 
     try {
       setClosingChat(true);
-      const summaryText =
-        summary?.core_summary || '상담이 상담원에 의해 종료되었습니다.';
+      const summaryText = summary?.core_summary || '상담이 상담원에 의해 종료되었습니다.';
       await apiCall(
         `/api/admin/chats/${encodeURIComponent(selectedChat.id)}/complete`,
         {
@@ -188,7 +208,7 @@ export function ActiveChats({ user }: { user: AppUser }) {
         }
       );
 
-      // WS 이벤트(session_status_changed)로도 정리되지만, UI 반응을 위해 즉시 정리
+      // WS 이벤트로도 정리되지만 즉시 UI 반영
       setChats((prev) => prev.filter((c) => c.id !== selectedChat.id));
       setSelectedChat(null);
       setMessages([]);
@@ -226,7 +246,8 @@ export function ActiveChats({ user }: { user: AppUser }) {
       if (selectedChat?.id === sessionId) {
         setMessages((prev) => {
           const mapped = mapApiMessage(msg);
-          return prev.some((x) => x.id === mapped.id) ? prev : [...prev, mapped];
+          if (prev.some((x) => x.id === mapped.id)) return prev;
+          return sortMessages([...prev, mapped]);
         });
       }
     } else if (payload.type === 'unread_count_updated') {
@@ -286,26 +307,51 @@ export function ActiveChats({ user }: { user: AppUser }) {
             />
           </div>
 
-          <div className="mb-3">
-            <select
-              value={filterCategory === 'all' ? '전체' : filterCategory}
-              onChange={(e) =>
-                setFilterCategory(e.target.value === '전체' ? 'all' : e.target.value)
-              }
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {categories.map((category) => (
-                <option key={category} value={category}>
-                  {category}
-                </option>
-              ))}
-            </select>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-gray-700 mb-2">카테고리</label>
+              <select
+                value={filterCategory === 'all' ? '전체' : filterCategory}
+                onChange={(e) =>
+                  setFilterCategory(e.target.value === '전체' ? 'all' : e.target.value)
+                }
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                {categories.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-gray-700 mb-2">처리 주체</label>
+              <select
+                value={filterHandler === 'all' ? '전체' : filterHandler}
+                onChange={(e) =>
+                  setFilterHandler(e.target.value === '전체' ? 'all' : e.target.value)
+                }
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                {handlers.map((handler) => (
+                  <option key={handler} value={handler}>
+                    {handler}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto min-h-0">
           {loadingChats && (
             <div className="p-4 text-gray-500">채팅 목록을 불러오는 중입니다...</div>
+          )}
+          {!loadingChats && filteredChats.length === 0 && (
+            <div className="h-full flex items-center justify-center text-gray-500">
+              상담 중인 채팅이 없습니다.
+            </div>
           )}
           {filteredChats.map((chat) => (
             <button
@@ -395,6 +441,14 @@ export function ActiveChats({ user }: { user: AppUser }) {
                     <FileText className="w-4 h-4" />
                     AI 요약
                   </button>
+                  {!agentMode && (
+                    <button
+                      onClick={handleTakeOver}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                    >
+                      직접 상담 진행
+                    </button>
+                  )}
                   {agentMode && (
                     <button
                       onClick={handleCompleteChat}
@@ -402,14 +456,6 @@ export function ActiveChats({ user }: { user: AppUser }) {
                       className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
                     >
                       채팅 종료
-                    </button>
-                  )}
-                  {!agentMode && (
-                    <button
-                      onClick={handleTakeOver}
-                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                    >
-                      직접 상담 진행
                     </button>
                   )}
                 </div>

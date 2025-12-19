@@ -111,7 +111,7 @@ export function AdminDashboard({ user, onLogout }: AdminDashboardProps) {
         )}
         {activeTab === 'pending' && (
           <div className="h-full">
-            <PendingChats user={user} />
+            <PendingChats user={user} onSwitchToActive={() => setActiveTab('active')} />
           </div>
         )}
         {activeTab === 'completed' && (

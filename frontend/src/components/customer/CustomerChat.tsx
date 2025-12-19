@@ -36,9 +36,25 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const addMessage = useCallback((m: Message) => {
-    setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+  const sortMessages = useCallback((list: Message[]) => {
+    const senderPriority: Record<Message['sender'], number> = { user: 0, ai: 1 };
+    return [...list].sort((a, b) => {
+      const tA = a.timestamp.getTime();
+      const tB = b.timestamp.getTime();
+      if (tA !== tB) return tA - tB;
+      const pA = senderPriority[a.sender] ?? 99;
+      const pB = senderPriority[b.sender] ?? 99;
+      if (pA !== pB) return pA - pB;
+      return a.id.localeCompare(b.id);
+    });
   }, []);
+
+  const addMessage = useCallback((m: Message) => {
+    setMessages((prev) => {
+      if (prev.some((x) => x.id === m.id)) return prev;
+      return sortMessages([...prev, m]);
+    });
+  }, [sortMessages]);
 
   const mapApiMessage = useCallback((m: ApiMessage): Message => {
     return {
@@ -69,7 +85,7 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
         );
         if (!res.data) throw new Error('세션 정보를 불러오지 못했습니다.');
         setSessionId(res.data.session.id);
-        setMessages(res.data.messages.map(mapApiMessage));
+        setMessages(sortMessages(res.data.messages.map(mapApiMessage)));
       } catch (e: any) {
         setError(e?.message || '세션을 불러오지 못했습니다.');
       } finally {
@@ -77,7 +93,7 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
       }
     };
     init();
-  }, [mapApiMessage]);
+  }, [mapApiMessage, sortMessages]);
 
   useEffect(() => {
     if (!chatEnded || logoutCountdown == null) return;
