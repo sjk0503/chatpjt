@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, Clock, FileText, AlertCircle, CheckCircle, Paperclip } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Search, Clock, FileText, AlertCircle, CheckCircle, Paperclip, Loader2 } from 'lucide-react';
 import { User as AppUser } from '../../App';
 import { apiCall } from '../../utils/api';
 import { useWebSocket } from '../../hooks/useWebSocket';
@@ -49,6 +49,8 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
   const [responseText, setResponseText] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [sendingInfo, setSendingInfo] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const formatFileSize = (size?: number) => {
     if (size == null) return '';
     if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
@@ -136,6 +138,10 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
     });
   }, []);
 
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
   const mapApiMessage = useCallback((m: ApiMessage): ChatMessage => {
     return {
       id: m.id,
@@ -154,11 +160,12 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
           `/api/chats/messages/${encodeURIComponent(sessionId)}`
         );
         setMessages(sortMessages((res.data?.messages || []).map(mapApiMessage)));
+        setTimeout(scrollToBottom, 50);
       } finally {
         setLoadingMessages(false);
       }
     },
-    [mapApiMessage, sortMessages]
+    [mapApiMessage, scrollToBottom, sortMessages]
   );
 
   useEffect(() => {
@@ -170,16 +177,21 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
   }, [fetchMessages, selectedChat]);
 
   const handleProvideInfo = useCallback(async () => {
-    if (!responseText.trim() || !selectedChat) return;
-    await apiCall(`/api/admin/chats/${encodeURIComponent(selectedChat.id)}/provide-info`, {
-      method: 'POST',
-      body: JSON.stringify({ info: responseText }),
-    });
-    alert('AI에게 정보를 전달했습니다. AI가 고객에게 응답합니다.');
-    setResponseText('');
-    setSelectedChat(null);
-    await fetchPendingChats();
-  }, [fetchPendingChats, responseText, selectedChat]);
+    if (!responseText.trim() || !selectedChat || sendingInfo) return;
+    try {
+      setSendingInfo(true);
+      await apiCall(`/api/admin/chats/${encodeURIComponent(selectedChat.id)}/provide-info`, {
+        method: 'POST',
+        body: JSON.stringify({ info: responseText }),
+      });
+      alert('AI에게 정보를 전달했습니다. AI가 고객에게 응답합니다.');
+      setResponseText('');
+      setSelectedChat(null);
+      await fetchPendingChats();
+    } finally {
+      setSendingInfo(false);
+    }
+  }, [fetchPendingChats, responseText, selectedChat, sendingInfo]);
 
   const handleDirectResponse = useCallback(async () => {
     if (!selectedChat) return;
@@ -363,7 +375,7 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
                 </div>
 
                 {/* Action panel */}
-                <div className="bg-white border border-gray-200 rounded-lg p-6">
+                  <div className={`bg-white border border-gray-200 rounded-lg p-6 ${sendingInfo ? 'pointer-events-none opacity-80' : ''}`}>
                   <h3 className="text-gray-900 mb-4">처리 방법 선택</h3>
 
                   <div className="space-y-4">
@@ -381,10 +393,10 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
                       <div className="mt-3 space-y-3">
                         <button
                           onClick={handleProvideInfo}
-                          disabled={!responseText.trim()}
+                          disabled={!responseText.trim() || sendingInfo}
                           className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
                         >
-                          <CheckCircle className="w-4 h-4" />
+                          {sendingInfo ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
                           AI에게 정보 전달
                         </button>
                         <button
@@ -428,11 +440,11 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
                       }`}
                       >
                         {m.sender === 'user' ? '고객' : m.sender === 'agent' ? '상담원' : 'AI'}
-                      </span>
-                      <div className="flex-1">
-                        <p className="whitespace-pre-wrap">{m.content}</p>
-                        {m.attachments && (
-                          <div className="mt-2 space-y-2">
+                          </span>
+                          <div className="flex-1">
+                            <p className="whitespace-pre-wrap">{m.content}</p>
+                            {m.attachments && (
+                              <div className="mt-2 space-y-2">
                             {m.attachments.map((file, idx) => {
                               const url = buildFileUrl(file.url);
                               const isImage = file.is_image || (file.mime || '').startsWith('image/');
@@ -466,16 +478,17 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
                               );
                             })}
                           </div>
-                        )}
-                        <div className="text-xs text-gray-400">
-                          {m.timestamp.toLocaleTimeString('ko-KR', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
+                            )}
+                            <div className="text-xs text-gray-400">
+                              {m.timestamp.toLocaleTimeString('ko-KR', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
                             </div>
                           </div>
                         </div>
                       ))}
+                      <div ref={messagesEndRef} />
                     </div>
                   )}
                 </div>

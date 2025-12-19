@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, FileText, User, Bot, Send, Paperclip } from 'lucide-react';
+import { Search, FileText, User, Bot, Send, Paperclip, Loader2 } from 'lucide-react';
 import { User as AppUser } from '../../App';
 import { apiCall } from '../../utils/api';
 import { useWebSocket } from '../../hooks/useWebSocket';
@@ -54,6 +54,7 @@ export function ActiveChats({ user }: { user: AppUser }) {
   const [summary, setSummary] = useState<SummaryData['summary'] | null>(null);
   const [closingChat, setClosingChat] = useState(false);
   const [filterHandler, setFilterHandler] = useState<string>('all');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const formatFileSize = (size?: number) => {
     if (size == null) return '';
@@ -174,6 +175,10 @@ export function ActiveChats({ user }: { user: AppUser }) {
     };
   }, [normalizeAttachment]);
 
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
   const fetchMessages = useCallback(
     async (sessionId: string) => {
       try {
@@ -181,12 +186,16 @@ export function ActiveChats({ user }: { user: AppUser }) {
         const res = await apiCall<{ messages: ApiMessage[] }>(
           `/api/chats/messages/${encodeURIComponent(sessionId)}`
         );
-        setMessages(sortMessages((res.data?.messages || []).map(mapApiMessage)));
+        setMessages((prev) => {
+          const next = sortMessages((res.data?.messages || []).map(mapApiMessage));
+          return next;
+        });
+        setTimeout(scrollToBottom, 50);
       } finally {
         setLoadingMessages(false);
       }
     },
-    [mapApiMessage, sortMessages]
+    [mapApiMessage, scrollToBottom, sortMessages]
   );
 
   const fetchSummary = useCallback(async (sessionId: string) => {
@@ -285,7 +294,9 @@ export function ActiveChats({ user }: { user: AppUser }) {
         setMessages((prev) => {
           const mapped = mapApiMessage(msg);
           if (prev.some((x) => x.id === mapped.id)) return prev;
-          return sortMessages([...prev, mapped]);
+          const next = sortMessages([...prev, mapped]);
+          setTimeout(scrollToBottom, 30);
+          return next;
         });
       }
     } else if (payload.type === 'unread_count_updated') {
@@ -318,7 +329,11 @@ export function ActiveChats({ user }: { user: AppUser }) {
         );
       }
     }
-  }, [ensureChatVisible, mapApiMessage, selectedChat]);
+  }, [ensureChatVisible, mapApiMessage, scrollToBottom, selectedChat, sortMessages]);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
 
   useWebSocket(onWsMessage, {
     enabled: true,
@@ -491,8 +506,9 @@ export function ActiveChats({ user }: { user: AppUser }) {
                     <button
                       onClick={handleCompleteChat}
                       disabled={closingChat}
-                      className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed"
+                      className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center gap-2"
                     >
+                      {closingChat && <Loader2 className="w-4 h-4 animate-spin" />}
                       채팅 종료
                     </button>
                   )}
@@ -586,6 +602,7 @@ export function ActiveChats({ user }: { user: AppUser }) {
                     </div>
                   </div>
                 ))}
+                <div ref={messagesEndRef} />
               </div>
 
               {showSummary && (
