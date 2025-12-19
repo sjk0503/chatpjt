@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, FileText, User, Bot, Send } from 'lucide-react';
+import { Search, FileText, User, Bot, Send, Paperclip } from 'lucide-react';
 import { User as AppUser } from '../../App';
 import { apiCall } from '../../utils/api';
 import { useWebSocket } from '../../hooks/useWebSocket';
+import { API_BASE_URL } from '../../config';
 
 interface ChatSession {
   id: string;
@@ -20,6 +21,7 @@ type ApiMessage = {
   sender_type: 'user' | 'ai' | 'agent';
   content: string;
   created_at?: string;
+  attachments?: any[];
 };
 
 interface ChatMessage {
@@ -27,6 +29,7 @@ interface ChatMessage {
   sender: 'user' | 'ai' | 'agent';
   content: string;
   timestamp: Date;
+  attachments?: Attachment[];
 }
 
 type SummaryData = {
@@ -52,6 +55,36 @@ export function ActiveChats({ user }: { user: AppUser }) {
   const [closingChat, setClosingChat] = useState(false);
   const [filterHandler, setFilterHandler] = useState<string>('all');
 
+  const formatFileSize = (size?: number) => {
+    if (size == null) return '';
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${size} B`;
+  };
+
+  const normalizeAttachment = useCallback((a: any): Attachment => {
+    if (!a) return { url: '', name: '파일' };
+    if (typeof a === 'string') {
+      const parts = a.split('/');
+      return { url: a, name: parts[parts.length - 1] || a, is_image: a.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i) != null };
+    }
+    return {
+      url: a.url || '',
+      name: a.name || '파일',
+      size: typeof a.size === 'number' ? a.size : undefined,
+      mime: a.mime || a.content_type,
+      is_image: typeof a.is_image === 'boolean' ? a.is_image : (a.mime || a.content_type || '').startsWith('image/'),
+    };
+  }, []);
+
+  type Attachment = {
+    url: string;
+    name: string;
+    size?: number;
+    mime?: string;
+    is_image?: boolean;
+  };
+
   const sortMessages = useCallback((list: ChatMessage[]) => {
     const senderPriority: Record<ChatMessage['sender'], number> = { user: 0, agent: 1, ai: 2 };
     return [...list].sort((a, b) => {
@@ -71,6 +104,10 @@ export function ActiveChats({ user }: { user: AppUser }) {
 
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
   const handlers = ['전체', 'AI', '상담원'];
+  const apiOrigin =
+    (API_BASE_URL || '').replace(/\/api\/?$/, '') || `${window.location.protocol}//${window.location.host}`;
+  const buildFileUrl = (url?: string) =>
+    url && url.startsWith('http') ? url : `${apiOrigin}${url || ''}`;
 
   const filteredChats = useMemo(() => {
     return chats.filter((chat) => {
@@ -133,8 +170,9 @@ export function ActiveChats({ user }: { user: AppUser }) {
       sender: m.sender_type,
       content: m.content,
       timestamp: m.created_at ? new Date(m.created_at) : new Date(),
+      attachments: Array.isArray(m.attachments) ? m.attachments.map(normalizeAttachment) : undefined,
     };
-  }, []);
+  }, [normalizeAttachment]);
 
   const fetchMessages = useCallback(
     async (sessionId: string) => {
@@ -495,18 +533,54 @@ export function ActiveChats({ user }: { user: AppUser }) {
                       } flex flex-col gap-1`}
                     >
                       <div
-                        className={`px-4 py-3 rounded-2xl ${
-                          message.sender === 'user'
-                            ? 'bg-white border border-gray-200 text-gray-900'
-                            : 'bg-blue-600 text-white'
-                        }`}
-                      >
-                        <p>{message.content}</p>
-                      </div>
-                      <span className="text-gray-500 px-2">
-                        {message.timestamp.toLocaleTimeString('ko-KR', {
-                          hour: '2-digit',
-                          minute: '2-digit',
+                      className={`px-4 py-3 rounded-2xl ${
+                        message.sender === 'user'
+                          ? 'bg-white border border-gray-200 text-gray-900'
+                          : 'bg-blue-600 text-white'
+                      }`}
+                    >
+                      <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                      {message.attachments && (
+                        <div className="mt-2 space-y-2">
+                          {message.attachments.map((file, idx) => {
+                            const url = buildFileUrl(file.url);
+                            const isImage = file.is_image || (file.mime || '').startsWith('image/');
+                            return (
+                              <div key={idx} className="rounded-lg overflow-hidden border border-white/20 bg-white/10">
+                                <div className="flex items-center justify-between px-3 py-2 text-sm">
+                                  <div className="flex items-center gap-2">
+                                    <Paperclip className="w-4 h-4" />
+                                    <span className="break-all">{file.name || '첨부파일'}</span>
+                                  </div>
+                                  <div className="text-xs opacity-80">{formatFileSize(file.size)}</div>
+                                </div>
+                                <div className="bg-white text-gray-900">
+                                  {isImage ? (
+                                    <a href={url} target="_blank" rel="noreferrer">
+                                      <img src={url} alt={file.name || '이미지'} className="max-h-72 w-full object-contain" />
+                                    </a>
+                                  ) : (
+                                    <a
+                                      href={url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      download={file.name || true}
+                                      className="block px-3 py-2 text-blue-600 hover:underline"
+                                    >
+                                      다운로드
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-gray-500 px-2">
+                      {message.timestamp.toLocaleTimeString('ko-KR', {
+                        hour: '2-digit',
+                        minute: '2-digit',
                         })}
                       </span>
                     </div>

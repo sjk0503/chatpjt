@@ -79,7 +79,7 @@ def _debug_log_rows(session_id: str, rows: list[dict[str, Any]]) -> None:
     _logger().warning(f"[SUMMARY-PENDING-ROWS] session={session_id} rows={preview}")
 
 
-async def build_admin_summary(session_id: str) -> AdminSummary:
+async def build_admin_summary(session_id: str, latest_user_message: str | None = None) -> AdminSummary:
     with db_conn() as conn:
         session = fetch_one(
             conn,

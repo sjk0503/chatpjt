@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, Clock, FileText, AlertCircle, CheckCircle } from 'lucide-react';
+import { Search, Clock, FileText, AlertCircle, CheckCircle, Paperclip } from 'lucide-react';
 import { User as AppUser } from '../../App';
 import { apiCall } from '../../utils/api';
 import { useWebSocket } from '../../hooks/useWebSocket';
+import { API_BASE_URL } from '../../config';
 
 interface PendingChat {
   id: string;
@@ -20,6 +21,7 @@ interface ApiMessage {
   sender_type: 'user' | 'ai' | 'agent';
   content: string;
   created_at?: string;
+  attachments?: any[];
 }
 
 interface ChatMessage {
@@ -27,7 +29,16 @@ interface ChatMessage {
   sender: 'user' | 'ai' | 'agent';
   content: string;
   timestamp: Date;
+  attachments?: Attachment[];
 }
+
+type Attachment = {
+  url: string;
+  name: string;
+  size?: number;
+  mime?: string;
+  is_image?: boolean;
+};
 
 export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwitchToActive?: (sessionId?: string) => void }) {
   const [chats, setChats] = useState<PendingChat[]>([]);
@@ -38,8 +49,33 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
   const [responseText, setResponseText] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const formatFileSize = (size?: number) => {
+    if (size == null) return '';
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${size} B`;
+  };
+
+  const normalizeAttachment = useCallback((a: any): Attachment => {
+    if (!a) return { url: '', name: '파일' };
+    if (typeof a === 'string') {
+      const parts = a.split('/');
+      return { url: a, name: parts[parts.length - 1] || a, is_image: a.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i) != null };
+    }
+    return {
+      url: a.url || '',
+      name: a.name || '파일',
+      size: typeof a.size === 'number' ? a.size : undefined,
+      mime: a.mime || a.content_type,
+      is_image: typeof a.is_image === 'boolean' ? a.is_image : (a.mime || a.content_type || '').startsWith('image/'),
+    };
+  }, []);
 
   const categories = ['전체', '주문 문의', '환불 요청', '기술 지원', '계정 관리'];
+  const apiOrigin =
+    (API_BASE_URL || '').replace(/\/api\/?$/, '') || `${window.location.protocol}//${window.location.host}`;
+  const buildFileUrl = (url?: string) =>
+    url && url.startsWith('http') ? url : `${apiOrigin}${url || ''}`;
 
   const fetchPendingChats = useCallback(async () => {
     try {
@@ -106,8 +142,9 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
       sender: m.sender_type,
       content: m.content,
       timestamp: m.created_at ? new Date(m.created_at) : new Date(),
+      attachments: Array.isArray(m.attachments) ? m.attachments.map(normalizeAttachment) : undefined,
     };
-  }, []);
+  }, [normalizeAttachment]);
 
   const fetchMessages = useCallback(
     async (sessionId: string) => {
@@ -383,22 +420,58 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
                         <div key={m.id} className="flex gap-2">
                           <span
                             className={`px-2 py-1 rounded ${
-                              m.sender === 'user'
-                                ? 'bg-gray-100 text-gray-700'
-                                : m.sender === 'agent'
-                                ? 'bg-green-100 text-green-700'
-                                : 'bg-blue-100 text-blue-700'
-                            }`}
-                          >
-                            {m.sender === 'user' ? '고객' : m.sender === 'agent' ? '상담원' : 'AI'}
-                          </span>
-                          <div className="flex-1">
-                            <p className="whitespace-pre-wrap">{m.content}</p>
-                            <div className="text-xs text-gray-400">
-                              {m.timestamp.toLocaleTimeString('ko-KR', {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                              })}
+                      m.sender === 'user'
+                        ? 'bg-gray-100 text-gray-700'
+                        : m.sender === 'agent'
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-blue-100 text-blue-700'
+                      }`}
+                      >
+                        {m.sender === 'user' ? '고객' : m.sender === 'agent' ? '상담원' : 'AI'}
+                      </span>
+                      <div className="flex-1">
+                        <p className="whitespace-pre-wrap">{m.content}</p>
+                        {m.attachments && (
+                          <div className="mt-2 space-y-2">
+                            {m.attachments.map((file, idx) => {
+                              const url = buildFileUrl(file.url);
+                              const isImage = file.is_image || (file.mime || '').startsWith('image/');
+                              return (
+                                <div key={idx} className="rounded border border-gray-200">
+                                  <div className="flex items-center justify-between px-3 py-2 text-sm bg-gray-50">
+                                    <div className="flex items-center gap-2">
+                                      <Paperclip className="w-4 h-4" />
+                                      <span className="break-all">{file.name || '첨부파일'}</span>
+                                    </div>
+                                    <div className="text-xs text-gray-500">{formatFileSize(file.size)}</div>
+                                  </div>
+                                  <div className="bg-white">
+                                    {isImage ? (
+                                      <a href={url} target="_blank" rel="noreferrer">
+                                        <img src={url} alt={file.name || '이미지'} className="max-h-72 w-full object-contain" />
+                                      </a>
+                                    ) : (
+                                      <a
+                                        href={url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        download={file.name || true}
+                                        className="block px-3 py-2 text-blue-600 hover:underline"
+                                      >
+                                        다운로드
+                                      </a>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <div className="text-xs text-gray-400">
+                          {m.timestamp.toLocaleTimeString('ko-KR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
                             </div>
                           </div>
                         </div>

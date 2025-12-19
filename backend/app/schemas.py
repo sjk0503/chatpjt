@@ -33,7 +33,7 @@ class LoginResponseData(BaseModel):
 class SendMessageRequest(BaseModel):
     session_id: str
     content: str
-    attachments: list[str] | None = None
+    attachments: list[Any] | None = None
 
 
 class MessageOut(BaseModel):

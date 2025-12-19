@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.websockets import WebSocketDisconnect
 
 from .config import load_settings
@@ -16,6 +17,8 @@ from .ws import manager
 def create_app() -> FastAPI:
     load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"), override=False)
     settings = load_settings()
+    uploads_dir = os.path.join(os.path.dirname(__file__), "..", "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
 
     app = FastAPI(title="ai3pjt-backend", version="0.1.0")
     app.add_middleware(
@@ -32,6 +35,7 @@ def create_app() -> FastAPI:
     app.include_router(chatbot.router)
     app.include_router(orders.router)
     app.include_router(orders.admin_router)
+    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
     @app.get("/health")
     def health() -> dict[str, str]:

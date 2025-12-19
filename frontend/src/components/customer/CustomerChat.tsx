@@ -2,14 +2,23 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { User } from '../../App';
 import { Send, Paperclip, Bot, User as UserIcon, LogOut } from 'lucide-react';
 import { apiCall } from '../../utils/api';
+import { API_BASE_URL } from '../../config';
 import { useWebSocket } from '../../hooks/useWebSocket';
+
+type Attachment = {
+  url: string;
+  name: string;
+  size?: number;
+  mime?: string;
+  is_image?: boolean;
+};
 
 interface Message {
   id: string;
   sender: 'user' | 'ai';
   content: string;
   timestamp: Date;
-  attachments?: string[];
+  attachments?: Attachment[];
 }
 
 type ApiMessage = {
@@ -35,6 +44,19 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
   const [logoutCountdown, setLogoutCountdown] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+  const apiOrigin =
+    (API_BASE_URL || '').replace(/\/api\/?$/, '') || `${window.location.protocol}//${window.location.host}`;
+
+  const buildFileUrl = (url?: string) =>
+    url && url.startsWith('http') ? url : `${apiOrigin}${url || ''}`;
+
+  const formatFileSize = (size?: number) => {
+    if (size == null) return '';
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${size} B`;
+  };
 
   const sortMessages = useCallback((list: Message[]) => {
     const senderPriority: Record<Message['sender'], number> = { user: 0, ai: 1 };
@@ -47,6 +69,21 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
       if (pA !== pB) return pA - pB;
       return a.id.localeCompare(b.id);
     });
+  }, []);
+
+  const normalizeAttachment = useCallback((a: any): Attachment => {
+    if (!a) return { url: '', name: '파일' };
+    if (typeof a === 'string') {
+      const parts = a.split('/');
+      return { url: a, name: parts[parts.length - 1] || a, is_image: a.match(/\.(png|jpe?g|gif|webp|bmp|svg)$/i) != null };
+    }
+    return {
+      url: a.url || '',
+      name: a.name || '파일',
+      size: typeof a.size === 'number' ? a.size : undefined,
+      mime: a.mime || a.content_type,
+      is_image: typeof a.is_image === 'boolean' ? a.is_image : (a.mime || a.content_type || '').startsWith('image/'),
+    };
   }, []);
 
   const addMessage = useCallback((m: Message) => {
@@ -63,9 +100,9 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
       sender: m.sender_type === 'user' ? 'user' : 'ai',
       content: m.content,
       timestamp: m.created_at ? new Date(m.created_at) : new Date(),
-      attachments: Array.isArray(m.attachments) ? m.attachments.map(String) : undefined,
+      attachments: Array.isArray(m.attachments) ? m.attachments.map(normalizeAttachment) : undefined,
     };
-  }, []);
+  }, [normalizeAttachment]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -130,7 +167,7 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
 
   useWebSocket(onWsMessage, { enabled: true });
 
-  const handleSend = async (content: string, attachments?: string[]) => {
+  const handleSend = async (content: string, attachments?: Attachment[]) => {
     if (!sessionId || !content.trim() || chatEnded) return;
     try {
       setError(null);
@@ -160,12 +197,38 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
     fileInputRef.current?.click();
   };
 
+  const uploadFile = async (file: File): Promise<Attachment> => {
+    const form = new FormData();
+    if (!sessionId) throw new Error('세션이 없습니다.');
+    form.append('session_id', sessionId);
+    form.append('file', file);
+    const res = await apiCall<{ attachment: Attachment }>('/api/chats/upload', {
+      method: 'POST',
+      body: form,
+    });
+    return res.data!.attachment;
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
       if (chatEnded) return;
-      const fileName = files[0].name;
-      void handleSend(`파일 첨부: ${fileName}`, [fileName]);
+      const file = files[0];
+      if (file.size > MAX_UPLOAD_BYTES) {
+        alert('파일은 최대 20MB까지 업로드할 수 있습니다.');
+        return;
+      }
+      void (async () => {
+        try {
+          const attachment = await uploadFile(file);
+          const name = attachment.name || file.name;
+          await handleSend(`파일을 첨부했습니다: ${name}`, [attachment]);
+        } catch (err: any) {
+          alert(err?.message || '파일 업로드에 실패했습니다.');
+        } finally {
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      })();
     }
   };
 
@@ -245,13 +308,39 @@ export function CustomerChat({ user, onLogout }: CustomerChatProps) {
                 >
                   <p className="whitespace-pre-wrap break-words">{message.content}</p>
                   {message.attachments && (
-                    <div className="mt-2 text-white/80">
-                      {message.attachments.map((file, idx) => (
-                        <div key={idx} className="flex items-center gap-2">
-                          <Paperclip className="w-4 h-4" />
-                          <span>{file}</span>
-                        </div>
-                      ))}
+                    <div className="mt-2 space-y-2">
+                      {message.attachments.map((file, idx) => {
+                        const url = buildFileUrl(file.url);
+                        const isImage = file.is_image || (file.mime || '').startsWith('image/');
+                        return (
+                          <div key={idx} className="border border-white/20 rounded-lg overflow-hidden bg-white/10">
+                            <div className="flex items-center justify-between px-3 py-2 text-sm">
+                              <div className="flex items-center gap-2">
+                                <Paperclip className="w-4 h-4" />
+                                <span className="break-all">{file.name || '첨부파일'}</span>
+                              </div>
+                              <div className="text-xs opacity-80">{formatFileSize(file.size)}</div>
+                            </div>
+                            <div className="bg-white text-gray-900">
+                              {isImage ? (
+                                <a href={url} target="_blank" rel="noreferrer">
+                                  <img src={url} alt={file.name || '이미지'} className="max-h-72 w-full object-contain" />
+                                </a>
+                              ) : (
+                                <a
+                                  href={url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  download={file.name || true}
+                                  className="block px-3 py-2 text-blue-600 hover:underline"
+                                >
+                                  다운로드
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

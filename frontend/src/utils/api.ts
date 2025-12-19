@@ -32,7 +32,8 @@ export async function apiCall<T>(
   if (options.headers) {
     Object.assign(headers, options.headers as Record<string, string>);
   }
-  if (!headers['Content-Type'] && options.body) {
+  const isFormData = options.body instanceof FormData;
+  if (!headers['Content-Type'] && options.body && !isFormData) {
     headers['Content-Type'] = 'application/json';
   }
   if (auth && token) {
@@ -58,4 +59,3 @@ export async function apiCall<T>(
 
   return payload;
 }
-

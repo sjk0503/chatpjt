@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Request
 
 from ..db import db_conn, execute, fetch_all, fetch_one, json_dumps, json_loads, utc_now
 from ..schemas import ApiResponse, MessageOut, SendMessageRequest, SessionOut, UserOut
@@ -14,6 +15,11 @@ from .auth import get_current_user
 from .chatbot import get_settings_map
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
+UPLOAD_MAX_BYTES = 20 * 1024 * 1024  # 20MB
+
+
+def _uploads_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "..", "..", "uploads")
 
 
 def _dt_to_iso(dt: datetime | None) -> str | None:
@@ -53,6 +59,64 @@ def _to_session_out(row: dict) -> SessionOut:
         assigned_agent_id=row.get("assigned_agent_id"),
         started_at=started_at,
     )
+
+
+@router.post("/upload", response_model=ApiResponse)
+async def upload_file(
+    request: Request,
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: UserOut = Depends(get_current_user),
+) -> ApiResponse:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="파일명이 비어 있습니다.")
+
+    with db_conn() as conn:
+        session = fetch_one(conn, "SELECT * FROM chat_sessions WHERE id=%s", (session_id,))
+        if not session:
+            raise HTTPException(status_code=404, detail="세션을 찾을 수 없습니다.")
+        if current_user.role == "customer" and session["customer_id"] != current_user.id:
+            raise HTTPException(status_code=403, detail="권한이 없습니다.")
+
+    upload_dir = os.path.join(_uploads_dir(), session_id)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    original_name = file.filename
+    _, ext = os.path.splitext(original_name)
+    saved_name = f"{uuid.uuid4().hex}{ext}"
+    saved_path = os.path.join(upload_dir, saved_name)
+
+    total = 0
+    try:
+        with open(saved_path, "wb") as f:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > UPLOAD_MAX_BYTES:
+                    raise HTTPException(status_code=400, detail="파일은 최대 20MB까지 업로드할 수 있습니다.")
+                f.write(chunk)
+    except Exception:
+        if os.path.exists(saved_path):
+            try:
+                os.remove(saved_path)
+            except Exception:
+                pass
+        raise
+
+    is_image = (file.content_type or "").startswith("image/")
+    base_url = str(request.base_url).rstrip("/")
+    url = f"/uploads/{session_id}/{saved_name}"
+    absolute_url = f"{base_url}{url}"
+    attachment = {
+        "url": absolute_url,
+        "name": original_name,
+        "size": total,
+        "mime": file.content_type,
+        "is_image": is_image,
+    }
+    return ApiResponse(success=True, data={"attachment": attachment})
 
 
 @router.get("/session", response_model=ApiResponse)
