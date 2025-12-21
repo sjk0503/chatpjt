@@ -77,12 +77,39 @@ def get_settings(current_user: UserOut = Depends(get_current_user)) -> ApiRespon
 def update_settings(payload: ChatbotSettingsUpdate, current_user: UserOut = Depends(get_current_user)) -> ApiResponse:
     _require_admin(current_user)
     with db_conn() as conn:
-        _upsert_setting(conn, "greeting", payload.greeting, current_user.id)
-        _upsert_setting(conn, "farewell", payload.farewell, current_user.id)
-        _upsert_setting(conn, "company_policy", payload.company_policy, current_user.id)
-        _upsert_setting(conn, "categories", json_dumps(payload.categories), current_user.id)
-        _upsert_setting(conn, "human_intervention_rules", payload.human_intervention_rules, current_user.id)
-        _upsert_setting(conn, "response_wait_time", str(payload.response_wait_time), current_user.id)
-        _upsert_setting(conn, "auto_close", "true" if payload.auto_close else "false", current_user.id)
-    return ApiResponse(success=True, message="설정이 저장되었습니다.")
+        current = get_settings_map(conn)
 
+        greeting = payload.greeting if payload.greeting is not None else current.get("greeting")
+        farewell = payload.farewell if payload.farewell is not None else current.get("farewell")
+        company_policy = payload.company_policy if payload.company_policy is not None else current.get("company_policy")
+
+        categories_raw = payload.categories if payload.categories is not None else current.get("categories") or []
+        categories = [c.strip() for c in categories_raw if isinstance(c, str) and c.strip()]
+        if not categories:
+            categories = DEFAULT_SETTINGS["categories"]
+
+        human_rules = (
+            payload.human_intervention_rules
+            if payload.human_intervention_rules is not None
+            else current.get("human_intervention_rules")
+        )
+
+        wait_time = payload.response_wait_time if payload.response_wait_time is not None else current.get("response_wait_time", 5)
+        try:
+            wait_time_int = int(wait_time)
+        except Exception:
+            wait_time_int = 5
+        if wait_time_int <= 0:
+            wait_time_int = 5
+
+        auto_close = payload.auto_close if payload.auto_close is not None else current.get("auto_close", True)
+        auto_close_bool = bool(auto_close)
+
+        _upsert_setting(conn, "greeting", greeting, current_user.id)
+        _upsert_setting(conn, "farewell", farewell, current_user.id)
+        _upsert_setting(conn, "company_policy", company_policy, current_user.id)
+        _upsert_setting(conn, "categories", json_dumps(categories), current_user.id)
+        _upsert_setting(conn, "human_intervention_rules", human_rules, current_user.id)
+        _upsert_setting(conn, "response_wait_time", str(wait_time_int), current_user.id)
+        _upsert_setting(conn, "auto_close", "true" if auto_close_bool else "false", current_user.id)
+    return ApiResponse(success=True, message="설정이 저장되었습니다.")

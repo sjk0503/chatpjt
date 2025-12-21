@@ -143,10 +143,6 @@ export function CompletedChats() {
     [mapApiMessage, sortMessages]
   );
 
-  const handleExport = () => {
-    alert('상담 기록을 내보냅니다.');
-  };
-
   return (
     <div className="h-full flex overflow-hidden">
       {/* Completed list */}
@@ -298,13 +294,6 @@ export function CompletedChats() {
                     </span>
                   </div>
                 </div>
-                <button
-                  onClick={handleExport}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  내보내기
-                </button>
               </div>
             </div>
 

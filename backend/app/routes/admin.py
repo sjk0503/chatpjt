@@ -72,6 +72,7 @@ def list_active_chats(
             JOIN users u ON u.id = s.customer_id
             LEFT JOIN chat_session_metadata m ON m.session_id = s.id
             WHERE s.status='active'
+            ORDER BY COALESCE(m.last_message_at, s.started_at) DESC
             """,
             (),
         )
@@ -123,14 +124,25 @@ def list_pending_chats(
               s.pending_at,
               s.summary,
               m.last_message,
+              m.last_message_at,
               m.priority
             FROM chat_sessions s
             JOIN users u ON u.id = s.customer_id
             LEFT JOIN chat_session_metadata m ON m.session_id = s.id
             WHERE s.status='pending'
+            ORDER BY COALESCE(m.last_message_at, s.pending_at, s.started_at) DESC
             """,
             (),
         )
+        settings = get_settings_map(conn)
+
+    wait_target = settings.get("response_wait_time") if settings is not None else None
+    try:
+        wait_target_int = int(wait_target) if wait_target is not None else 5
+    except Exception:
+        wait_target_int = 5
+    if wait_target_int <= 0:
+        wait_target_int = 1
 
     now = utc_now()
     chats = []
@@ -147,6 +159,13 @@ def list_pending_chats(
         else:
             wait_minutes = 0
         issue_preview = (r.get("summary") or "").strip() or (r.get("last_message") or "").strip() or "사람 개입이 필요합니다."
+        ratio = (wait_minutes / wait_target_int) if wait_target_int else 0
+        if ratio <= 0.5:
+            priority = "low"
+        elif ratio <= 0.8:
+            priority = "medium"
+        else:
+            priority = "high"
         chats.append(
             {
                 "id": r["id"],
@@ -155,9 +174,10 @@ def list_pending_chats(
                 "category": r.get("category") or "미분류",
                 "issue": issue_preview,
                 "wait_time": wait_minutes,
-                "priority": (r.get("priority") or "medium"),
+                "priority": priority,
             }
         )
+    chats.sort(key=lambda c: c["wait_time"], reverse=True)
     return ApiResponse(success=True, data={"chats": chats})
 
 
@@ -184,11 +204,13 @@ def list_completed_chats(
               s.handler_type,
               s.duration_minutes,
               s.completed_at,
-              s.summary
+              s.summary,
+              m.last_message_at
             FROM chat_sessions s
             JOIN users u ON u.id = s.customer_id
+            LEFT JOIN chat_session_metadata m ON m.session_id = s.id
             WHERE s.status='completed'
-            ORDER BY s.completed_at DESC
+            ORDER BY COALESCE(m.last_message_at, s.completed_at, s.started_at) DESC
             """,
             (),
         )

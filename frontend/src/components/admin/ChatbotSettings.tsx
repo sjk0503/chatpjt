@@ -26,6 +26,7 @@ export function ChatbotSettings() {
           categories: string[];
           human_intervention_rules: string;
           response_wait_time: number;
+          auto_close: boolean;
         }>('/api/admin/chatbot/settings');
 
         if (!res.data) throw new Error('설정 정보를 불러오지 못했습니다.');
@@ -61,6 +62,11 @@ export function ChatbotSettings() {
     try {
       setSaving(true);
       setError(null);
+
+      const waitTimeParsed = Number.parseInt(responseWaitTime, 10);
+      const waitTime = Number.isFinite(waitTimeParsed) && waitTimeParsed > 0 && waitTimeParsed <= 60 ? waitTimeParsed : 5;
+      const trimmedCategories = categories.map((c) => c.trim()).filter(Boolean);
+
       await apiCall(
         '/api/admin/chatbot/settings',
         {
@@ -69,9 +75,10 @@ export function ChatbotSettings() {
             greeting,
             farewell,
             company_policy: companyPolicy,
-            categories,
+            categories: trimmedCategories,
             human_intervention_rules: humanInterventionRules,
-            response_wait_time: parseInt(responseWaitTime || '5', 10),
+            response_wait_time: waitTime,
+            auto_close: true,
           }),
         },
         { auth: true }

@@ -102,10 +102,10 @@ class ChatbotSettingsOut(BaseModel):
 
 
 class ChatbotSettingsUpdate(BaseModel):
-    greeting: str
-    farewell: str
-    company_policy: str
-    categories: list[str]
-    human_intervention_rules: str
-    response_wait_time: int
-    auto_close: bool
+    greeting: str | None = None
+    farewell: str | None = None
+    company_policy: str | None = None
+    categories: list[str] | None = None
+    human_intervention_rules: str | None = None
+    response_wait_time: int | None = None
+    auto_close: bool | None = None

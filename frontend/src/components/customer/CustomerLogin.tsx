@@ -127,10 +127,6 @@ export function CustomerLogin({ onLogin, onSwitchToAdmin }: CustomerLoginProps) 
             {/* Removed password recovery button */}
           </form>
         </div>
-
-        <div className="mt-6 text-center text-gray-600">
-          <p>데모 계정: 임의의 이메일과 비밀번호를 입력하세요</p>
-        </div>
       </div>
     </div>
   );

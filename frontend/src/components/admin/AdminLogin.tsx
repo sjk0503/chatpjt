@@ -51,8 +51,7 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
       onLogin(res.data.user);
     } catch (e: any) {
       setError(
-        e?.message ||
-          '로그인에 실패했습니다. 관리자 계정이 없다면 백엔드에서 관리자 계정을 먼저 생성해주세요.'
+        e?.message || '로그인에 실패했습니다. 이메일과 비밀번호를 다시 확인해주세요.'
       );
     } finally {
       setLoading(false);
@@ -137,10 +136,6 @@ export function AdminLogin({ onLogin }: AdminLoginProps) {
               {loading ? '로그인 중...' : '관리자 로그인'}
             </button>
           </form>
-        </div>
-
-        <div className="mt-6 text-center text-gray-600">
-          <p>관리자 계정이 없다면 백엔드에서 먼저 생성해주세요.</p>
         </div>
       </div>
     </div>

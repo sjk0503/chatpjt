@@ -7,6 +7,7 @@ import os
 import re
 from dataclasses import dataclass
 from typing import Any
+from datetime import datetime
 
 from ..db import db_conn, fetch_all, fetch_one
 from .ai import AiResult, process_message
@@ -95,6 +96,17 @@ def _user_says_no_more(conversation_rows: list[dict[str, Any]]) -> bool:
     return any(re.search(pat, last_user) for pat in negative_patterns)
 
 
+def _to_serializable(obj: Any) -> Any:
+    """datetime 등을 JSON 직렬화 가능한 값으로 변환한다."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_serializable(v) for v in obj]
+    return obj
+
+
 def _tool_defs() -> list[dict[str, Any]]:
     return [
         {
@@ -125,12 +137,76 @@ def _tool_defs() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_latest_order_summary",
+                "description": "가장 최근 주문 1건의 주문번호/상품명/상태/주문일시를 조회한다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "customer_id": {"type": "string", "description": "주문자 ID (미지정 시 현재 고객)"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_order_numbers",
+                "description": "주문번호 목록을 최신순으로 최대 limit개까지 조회한다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "customer_id": {"type": "string", "description": "주문자 ID (미지정 시 현재 고객)"},
+                        "limit": {"type": "integer", "description": "가져올 최대 개수 (기본 5)", "minimum": 1, "maximum": 20},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_orders_by_status",
+                "description": "주문 상태별로 주문번호/상품명/주문일시를 조회한다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "customer_id": {"type": "string", "description": "주문자 ID (미지정 시 현재 고객)"},
+                        "shipping_status": {
+                            "type": "string",
+                            "enum": ["preparing", "shipped", "delivered", "cancelled"],
+                            "description": "배송 상태",
+                        },
+                        "limit": {"type": "integer", "description": "가져올 최대 개수 (기본 10)", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["shipping_status"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_shipping_status_counts",
+                "description": "현재 고객의 배송 상태별 주문 개수를 집계한다.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "customer_id": {"type": "string", "description": "주문자 ID (미지정 시 현재 고객)"},
+                    },
+                },
+            },
+        },
     ]
 
 
 def _run_tool(tc: ToolCall, default_customer_id: str | None) -> dict[str, Any]:
     name = tc.name
     args = tc.arguments or {}
+    resolved_customer_id = str(args.get("customer_id") or default_customer_id or "").strip()
+    if "customer_id" in args and not resolved_customer_id:
+        return {"ok": False, "message": "customer_id가 필요합니다."}
+
     with db_conn() as conn:
         if name == "get_order_by_number":
             order_no = str(args.get("order_number") or "").strip()
@@ -143,10 +219,10 @@ def _run_tool(tc: ToolCall, default_customer_id: str | None) -> dict[str, Any]:
             )
             if not row:
                 return {"ok": False, "message": "주문을 찾을 수 없습니다."}
-            return {"ok": True, "order": row}
+            return {"ok": True, "order": _to_serializable(row)}
 
         if name == "list_recent_orders":
-            customer_id = str(args.get("customer_id") or default_customer_id or "").strip()
+            customer_id = resolved_customer_id
             limit = args.get("limit")
             try:
                 limit_int = int(limit)
@@ -162,7 +238,72 @@ def _run_tool(tc: ToolCall, default_customer_id: str | None) -> dict[str, Any]:
                 "FROM orders WHERE customer_id=%s ORDER BY ordered_at DESC LIMIT %s",
                 (customer_id, limit_int),
             )
-            return {"ok": True, "orders": rows}
+            return {"ok": True, "orders": _to_serializable(rows)}
+
+        if name == "get_latest_order_summary":
+            customer_id = resolved_customer_id
+            if not customer_id:
+                return {"ok": False, "message": "customer_id가 필요합니다."}
+            row = fetch_one(
+                conn,
+                "SELECT order_number, product_name, shipping_status, ordered_at FROM orders WHERE customer_id=%s ORDER BY ordered_at DESC LIMIT 1",
+                (customer_id,),
+            )
+            if not row:
+                return {"ok": False, "message": "주문을 찾을 수 없습니다."}
+            return {"ok": True, "order": _to_serializable(row)}
+
+        if name == "list_order_numbers":
+            customer_id = resolved_customer_id
+            limit = args.get("limit")
+            try:
+                limit_int = int(limit)
+            except Exception:
+                limit_int = 5
+            if limit_int <= 0 or limit_int > 20:
+                limit_int = 5
+            if not customer_id:
+                return {"ok": False, "message": "customer_id가 필요합니다."}
+            rows = fetch_all(
+                conn,
+                "SELECT order_number, product_name, shipping_status, ordered_at FROM orders WHERE customer_id=%s ORDER BY ordered_at DESC LIMIT %s",
+                (customer_id, limit_int),
+            )
+            return {"ok": True, "orders": _to_serializable(rows)}
+
+        if name == "list_orders_by_status":
+            customer_id = resolved_customer_id
+            status = str(args.get("shipping_status") or "").strip()
+            if status not in ("preparing", "shipped", "delivered", "cancelled"):
+                return {"ok": False, "message": "shipping_status가 올바르지 않습니다."}
+            limit = args.get("limit")
+            try:
+                limit_int = int(limit)
+            except Exception:
+                limit_int = 10
+            if limit_int <= 0 or limit_int > 20:
+                limit_int = 10
+            if not customer_id:
+                return {"ok": False, "message": "customer_id가 필요합니다."}
+            rows = fetch_all(
+                conn,
+                "SELECT order_number, product_name, shipping_status, ordered_at FROM orders WHERE customer_id=%s AND shipping_status=%s "
+                "ORDER BY ordered_at DESC LIMIT %s",
+                (customer_id, status, limit_int),
+            )
+            return {"ok": True, "orders": _to_serializable(rows)}
+
+        if name == "get_shipping_status_counts":
+            customer_id = resolved_customer_id
+            if not customer_id:
+                return {"ok": False, "message": "customer_id가 필요합니다."}
+            rows = fetch_all(
+                conn,
+                "SELECT shipping_status, COUNT(*) AS count FROM orders WHERE customer_id=%s GROUP BY shipping_status",
+                (customer_id,),
+            )
+            counts = {r["shipping_status"]: int(r["count"]) for r in rows}
+            return {"ok": True, "counts": counts}
 
     return {"ok": False, "message": f"알 수 없는 함수 호출: {name}"}
 

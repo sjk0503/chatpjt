@@ -36,7 +36,7 @@ out/
 # Env files (do not commit secrets)
 .env
 .env.*
-!.env.example
+.env.example
 
 # Coverage
 coverage/
@@ -60,3 +60,10 @@ venv/
 .venv/
 
 DEPLOY.md
+AI.md
+API.md
+HOWTOUSE.md
+REQ.md
+backend/README.md
+
+backend/uploads/*

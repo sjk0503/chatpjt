@@ -138,10 +138,6 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
     });
   }, []);
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
   const mapApiMessage = useCallback((m: ApiMessage): ChatMessage => {
     return {
       id: m.id,
@@ -160,12 +156,11 @@ export function PendingChats({ user, onSwitchToActive }: { user: AppUser; onSwit
           `/api/chats/messages/${encodeURIComponent(sessionId)}`
         );
         setMessages(sortMessages((res.data?.messages || []).map(mapApiMessage)));
-        setTimeout(scrollToBottom, 50);
       } finally {
         setLoadingMessages(false);
       }
     },
-    [mapApiMessage, scrollToBottom, sortMessages]
+    [mapApiMessage, sortMessages]
   );
 
   useEffect(() => {
