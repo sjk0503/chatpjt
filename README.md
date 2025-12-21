@@ -59,5 +59,3 @@ npm -C frontend run dev  # 기본 http://localhost:3000 (Vite 프록시로 /api,
 
 ## 참고
 - 업로드 경로: `backend/uploads/{sessionId}/...` (20MB 제한)
-- 요구사항/AI 정책: `REQ.md`, `AI.md`
-- 로컬 실행 가이드 상세: `backend/LOCAL_SETUP.md`, `HOWTOUSE.md`
